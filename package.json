@@ -1,22 +1,29 @@
 {
-  "name": "stickersearch",
-  "version": "1.0.0",
+  "name": "nicanor",
+  "version": "0.1.0",
   "description": "WhatsApp bot for tagging and searching stickers",
   "type": "module",
   "scripts": {
-    "dev": "tsx src/index.ts",
+    "dev": "tsx src/boot.ts | pino-pretty -lc",
+    "db:reset": "rm -f stickersearch.db* && rm -rf stickers",
+    "format": "biome format --write src/",
+    "lint": "biome check src/",
+    "lint:fix": "biome check --write src/",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/boot.js"
   },
   "dependencies": {
     "baileys": "^7.0.0-rc.9",
     "better-sqlite3": "^11.0.0",
+    "pino": "^9.0.0",
     "qrcode-terminal": "^0.12.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.4.4",
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^22.0.0",
     "@types/qrcode-terminal": "^0.12.2",
+    "pino-pretty": "^13.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.5.0"
   }
