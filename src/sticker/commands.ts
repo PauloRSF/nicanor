@@ -16,7 +16,7 @@ export async function saveSticker({
 
 	logger.info({ stickerId: sticker.id }, "Sticker saved");
 
-  const existingTagsMessage = sticker.tags.length > 0 ? `\n\nTags atuais: ${sticker.tags.join(", ")}` : "";
+	const existingTagsMessage = sticker.tags.length > 0 ? `\n\nTags atuais: ${sticker.tags.join(", ")}` : "";
 
 	await sendText(`Figurinha recebida!${existingTagsMessage}\n\nUse *!tag (ou !t) tag1 tag2 ...* para marcá-la.`);
 }
@@ -61,7 +61,17 @@ export async function searchStickers({
 
 	for (const sticker of results) {
 		try {
+			if (!(await sticker.hasFile())) {
+				logger.warn({ stickerId: sticker.id }, "Sticker file missing in storage, skipping");
+				continue;
+			}
+
 			const bytes = await sticker.getFile();
+
+			if (bytes.length === 0) {
+				logger.warn({ stickerId: sticker.id }, "Sticker file is empty, skipping");
+				continue;
+			}
 
 			logger.info({ stickerId: sticker.id, stickerByteLength: bytes.length }, "Sending sticker");
 

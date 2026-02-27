@@ -1,47 +1,46 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-
+import { supabase } from "../_lib/supabase.js";
 import type { Sticker } from "./model.js";
 
-const STICKERS_DIR = path.resolve("stickers");
-
-function getStickerFilePath(hash: Sticker["hash"]): string {
-	return path.join(STICKERS_DIR, `${hash}.webp`);
-}
+const BUCKET = "stickers";
 
 export const StickerStorage = {
 	setup: async (): Promise<void> => {
-		await fs.mkdir(STICKERS_DIR, { recursive: true });
+		const { error } = await supabase.storage.createBucket(BUCKET, { public: false });
+
+		if (error && !error.message.includes("already exists")) {
+			throw new Error(`Failed to create storage bucket: ${error.message}`);
+		}
 	},
 
 	save: async (hash: Sticker["hash"], data: Buffer): Promise<void> => {
-		const stickerFilePath = getStickerFilePath(hash);
+		if (await StickerStorage.exists(hash)) return;
 
-		await fs.writeFile(stickerFilePath, data, { flag: "wx" }).catch((err) => {
-			if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+		const { error } = await supabase.storage.from(BUCKET).upload(`${hash}.webp`, data, {
+			contentType: "image/webp",
 		});
+
+		if (error) throw error;
 	},
 
 	delete: async (hash: Sticker["hash"]): Promise<void> => {
-		const stickerFilePath = getStickerFilePath(hash);
+		const { error } = await supabase.storage.from(BUCKET).remove([`${hash}.webp`]);
 
-		await fs.unlink(stickerFilePath).catch((err) => {
-			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-		});
+		if (error) throw error;
 	},
 
 	get: async (hash: Sticker["hash"]): Promise<Buffer> => {
-		const stickerFilePath = getStickerFilePath(hash);
+		const { data, error } = await supabase.storage.from(BUCKET).download(`${hash}.webp`);
 
-		return await fs.readFile(stickerFilePath);
+		if (error || !data) throw new Error(`Failed to download sticker ${hash}: ${error?.message}`);
+
+		return Buffer.from(await data.arrayBuffer());
 	},
 
 	exists: async (hash: Sticker["hash"]): Promise<boolean> => {
-		const stickerFilePath = getStickerFilePath(hash);
+		const { data, error } = await supabase.storage.from(BUCKET).list("", { search: `${hash}.webp`, limit: 1 });
 
-		return fs.access(stickerFilePath).then(
-			() => true,
-			() => false,
-		);
+		if (error) return false;
+
+		return (data ?? []).some((f) => f.name === `${hash}.webp`);
 	},
 };

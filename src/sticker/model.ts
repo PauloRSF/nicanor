@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 
-import { db } from "../db/index.js";
+import { supabase } from "../_lib/supabase.js";
 import { StickerStorage } from "./storage.js";
 
 const MAX_TAG_LENGTH = 64;
@@ -24,23 +24,26 @@ export class UnsavedSticker {
 	async save(): Promise<Sticker> {
 		const hash = this.hash;
 
-		const row = db
-			.prepare<[string, string], StickerRow>(
-				`INSERT INTO stickers (hash, user_id) VALUES (?, ?)
-				 ON CONFLICT (hash, user_id) DO UPDATE SET last_sent_at = CURRENT_TIMESTAMP
-				 RETURNING *`,
-			)
-			.get(hash, this.userId);
+		const { data: row, error } = await supabase
+			.from("stickers")
+			.upsert({ hash, user_id: this.userId, last_sent_at: new Date().toISOString() }, { onConflict: "hash,user_id" })
+			.select()
+			.single();
 
-		if (!row) throw new Error(`Failed to upsert sticker: hash=${hash}, userId=${this.userId}`);
+		if (error || !row) {
+			throw new Error(`Failed to upsert sticker: hash=${hash}, userId=${this.userId} — ${error?.message}`);
+		}
 
 		await StickerStorage.save(hash, this.data);
 
-    const tags = db
-      .prepare<[Sticker["id"]], { tag: string }>("SELECT tag FROM sticker_tags WHERE sticker_id = ?")
-      .all(row.id);
+		const { data: tagRows } = await supabase.from("sticker_tags").select("tag").eq("sticker_id", row.id);
 
-		return new Sticker({ id: row.id, hash, userId: this.userId, tags: tags.map((t) => t.tag) });
+		return new Sticker({
+			id: row.id,
+			hash,
+			userId: this.userId,
+			tags: (tagRows ?? []).map((t) => t.tag),
+		});
 	}
 
 	get hash(): string {
@@ -51,13 +54,6 @@ export class UnsavedSticker {
 		return this.cachedHash;
 	}
 }
-
-type StickerRow = {
-	id: number;
-	hash: string;
-	user_id: string;
-	created_at: string;
-};
 
 type StickerConstructorOptions = {
 	id: number;
@@ -101,80 +97,76 @@ export class Sticker {
 	}
 
 	async save(): Promise<void> {
-		const deleteTags = db.prepare("DELETE FROM sticker_tags WHERE sticker_id = ?");
-		const insertTag = db.prepare("INSERT OR IGNORE INTO sticker_tags (sticker_id, tag) VALUES (?, ?)");
+		await supabase.from("sticker_tags").delete().eq("sticker_id", this.id);
 
-		const transaction = db.transaction((tags: string[]) => {
-			deleteTags.run(this.id);
+		const sanitized = this.tags.map(sanitizeTag).filter(Boolean);
 
-			for (const raw of tags) {
-				const tag = sanitizeTag(raw);
+		if (sanitized.length > 0) {
+			const rows = [...new Set(sanitized)].map((tag) => ({ sticker_id: this.id, tag }));
 
-				if (tag) insertTag.run(this.id, tag);
-			}
-		});
+			const { error } = await supabase.from("sticker_tags").insert(rows);
 
-		transaction(this.tags);
+			if (error) throw new Error(`Failed to insert tags for sticker ${this.id}: ${error.message}`);
+		}
 	}
 
 	async delete(): Promise<void> {
 		const { hash } = this;
 
-		db.prepare("DELETE FROM sticker_tags WHERE sticker_id = ?").run(this.id);
-		db.prepare("DELETE FROM stickers WHERE id = ?").run(this.id);
+		await supabase.from("sticker_tags").delete().eq("sticker_id", this.id);
+		await supabase.from("stickers").delete().eq("id", this.id);
 
-		const othersWithSameHash = db
-			.prepare<[string], { count: number }>("SELECT COUNT(*) AS count FROM stickers WHERE hash = ?")
-			.get(hash);
+		const { count } = await supabase.from("stickers").select("id", { count: "exact", head: true }).eq("hash", hash);
 
-		if (!othersWithSameHash || othersWithSameHash.count === 0) {
+		if (!count || count === 0) {
 			await StickerStorage.delete(hash);
 		}
 	}
 
 	static async getLastByUserId(userId: string): Promise<Sticker | null> {
-		const row = db
-			.prepare<[string], StickerRow>("SELECT * FROM stickers WHERE user_id = ? ORDER BY last_sent_at DESC LIMIT 1")
-			.get(userId);
+		const { data: row, error } = await supabase
+			.from("stickers")
+			.select("id, hash, user_id, sticker_tags(tag)")
+			.eq("user_id", userId)
+			.order("last_sent_at", { ascending: false })
+			.limit(1)
+			.single();
 
-		if (!row) return null;
+		if (error || !row) return null;
 
-		const tags = db
-			.prepare<[Sticker["id"]], { tag: string }>("SELECT tag FROM sticker_tags WHERE sticker_id = ?")
-			.all(row.id);
+		const tags = (row.sticker_tags as { tag: string }[]).map((t) => t.tag);
 
-		return new Sticker({ id: row.id, hash: row.hash, userId: row.user_id, tags: tags.map((t) => t.tag) });
+		return new Sticker({ id: row.id, hash: row.hash, userId: row.user_id, tags });
 	}
 
 	static async searchByTags(userId: string, tags: string[], limit = MAX_SEARCH_RESULTS): Promise<Sticker[]> {
 		const normalized = tags.map(sanitizeTag).filter(Boolean);
 		if (normalized.length === 0) return [];
 
-		const tagClauses = normalized.map(() => "st.tag LIKE ?");
-		const patterns = normalized.map((t) => `%${t}%`);
+		const orFilter = normalized.map((t) => `tag.ilike.%${t}%`).join(",");
 
-		const rows = db
-			.prepare(
-				`SELECT s.*, st.tag AS matched_tag
-         FROM stickers s
-         JOIN sticker_tags st ON s.id = st.sticker_id
-         WHERE s.user_id = ? AND (${tagClauses.join(" OR ")})`,
-			)
-			.all(userId, ...patterns) as (StickerRow & { matched_tag: string })[];
+		const { data: rows, error } = await supabase
+			.from("sticker_tags")
+			.select("tag, sticker_id, stickers!inner(id, hash, user_id)")
+			.eq("stickers.user_id", userId)
+			.or(orFilter);
 
-		const stickerMap = new Map<Sticker["id"], { sticker: Sticker; matchedPositions: Set<number> }>();
+		if (error || !rows) return [];
+
+		const stickerMap = new Map<number, { sticker: Sticker; matchedPositions: Set<number> }>();
 
 		for (const row of rows) {
-			let entry = stickerMap.get(row.id);
+			const s = row.stickers as unknown as { id: number; hash: string; user_id: string };
+			let entry = stickerMap.get(s.id);
 			if (!entry) {
 				entry = {
-					sticker: new Sticker({ id: row.id, hash: row.hash, userId: row.user_id, tags: [row.matched_tag] }),
+					sticker: new Sticker({ id: s.id, hash: s.hash, userId: s.user_id, tags: [row.tag] }),
 					matchedPositions: new Set(),
 				};
-				stickerMap.set(row.id, entry);
+				stickerMap.set(s.id, entry);
 			}
 			for (let i = 0; i < normalized.length; i++) {
-				if (row.matched_tag.includes(normalized[i])) {
+				if (row.tag.includes(normalized[i])) {
 					entry.matchedPositions.add(i);
 				}
 			}

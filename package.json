@@ -5,25 +5,25 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/boot.ts | pino-pretty -lc",
-    "db:reset": "rm -f stickersearch.db* && rm -rf stickers",
     "format": "biome format --write src/",
     "lint": "biome check src/",
     "lint:fix": "biome check --write src/",
+    "db:push": "supabase db push",
     "build": "tsc",
     "start": "node dist/boot.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.98.0",
     "baileys": "^7.0.0-rc.9",
-    "better-sqlite3": "^11.0.0",
     "pino": "^9.0.0",
     "qrcode-terminal": "^0.12.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.4",
-    "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^22.0.0",
     "@types/qrcode-terminal": "^0.12.2",
     "pino-pretty": "^13.0.0",
+    "supabase": "^2.76.15",
     "tsx": "^4.0.0",
     "typescript": "^5.5.0"
   }

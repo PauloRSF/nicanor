@@ -4,7 +4,7 @@ import * as messageHandler from "./messages/index.js";
 import { StickerStorage } from "./sticker/index.js";
 
 async function start(): Promise<void> {
-	database.init();
+	await database.init();
 
 	await StickerStorage.setup();
 
@@ -15,7 +15,6 @@ function gracefulShutdown(): void {
 	logger.info("Shutting down...");
 
 	messageHandler.shutdown();
-	database.shutdown();
 
 	process.exit(0);
 }

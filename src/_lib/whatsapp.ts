@@ -76,6 +76,7 @@ export async function createWhatsAppClient({
 			},
 			version,
 			printQRInTerminal: false,
+			syncFullHistory: false,
 		});
 
 		currentSocket = socket;
