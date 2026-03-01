@@ -9,16 +9,19 @@ import {
 	type WASocket,
 } from "baileys";
 import qrcode from "qrcode-terminal";
+import sharp from "sharp";
 
 import { logger } from "./logger.js";
 
 type MessageContext = { jid: string; socket: WASocket };
 type TextMessageEvent = MessageContext & { text: string };
 type StickerMessageEvent = MessageContext & { stickerBytes: Buffer };
+type ImageMessageEvent = MessageContext & { imageBytes: Buffer };
 
 export type WhatsAppClient = {
 	onTextMessage: (cb: (event: TextMessageEvent) => void) => void;
 	onStickerMessage: (cb: (event: StickerMessageEvent) => void) => void;
+	onImageMessage: (cb: (event: ImageMessageEvent) => void) => void;
 	shutdown: () => void;
 };
 
@@ -26,8 +29,11 @@ const DEFAULT_MAX_RETRIES = 10;
 const DEFAULT_BASE_DELAY_MS = 2_000;
 const MAX_STICKER_BYTES = 2 * 1024 * 1024;
 
-async function downloadSticker(stickerMessage: proto.Message.IStickerMessage): Promise<Buffer> {
-	const stream = await downloadContentFromMessage(stickerMessage, "sticker");
+async function downloadMedia(
+	message: proto.Message.IStickerMessage | proto.Message.IImageMessage,
+	type: "sticker" | "image",
+): Promise<Buffer> {
+	const stream = await downloadContentFromMessage(message, type);
 
 	const chunks: Buffer[] = [];
 	let totalBytes = 0;
@@ -35,7 +41,7 @@ async function downloadSticker(stickerMessage: proto.Message.IStickerMessage): P
 	for await (const chunk of stream) {
 		totalBytes += chunk.length;
 		if (totalBytes > MAX_STICKER_BYTES) {
-			throw new Error(`Sticker exceeds ${MAX_STICKER_BYTES} byte limit`);
+			throw new Error(`Media (type: ${type}) exceeds ${MAX_STICKER_BYTES} byte limit`);
 		}
 		chunks.push(chunk as Buffer);
 	}
@@ -63,6 +69,9 @@ export async function createWhatsAppClient({
 
 	let onText: ((event: TextMessageEvent) => void) | null = null;
 	let onSticker: ((event: StickerMessageEvent) => void) | null = null;
+	let onImage: ((event: ImageMessageEvent) => void) | null = null;
+
+	let connectedAt = 0;
 
 	let bootResolve: () => void;
 	let bootReject: (err: Error) => void;
@@ -91,6 +100,7 @@ export async function createWhatsAppClient({
 			}
 
 			if (connection === "open") {
+				connectedAt = Math.floor(Date.now() / 1000);
 				retryCount = 0;
 				logger.info("Connected to WhatsApp!");
 
@@ -134,9 +144,15 @@ export async function createWhatsAppClient({
 		});
 
 		socket.ev.on("messages.upsert", async ({ messages }) => {
-			for (const { message, key } of messages) {
+			for (const msg of messages) {
 				try {
+					const { message, key, messageTimestamp } = msg;
+
 					if (!message || key.fromMe) continue;
+
+					const timestamp = typeof messageTimestamp === "number" ? messageTimestamp : Number(messageTimestamp);
+
+					if (timestamp < connectedAt) continue;
 
 					const jid = key.remoteJid;
 
@@ -145,9 +161,13 @@ export async function createWhatsAppClient({
 					const text = message.conversation ?? message.extendedTextMessage?.text;
 
 					if (message.stickerMessage) {
-						const stickerBytes = await downloadSticker(message.stickerMessage);
+						const stickerBytes = await downloadMedia(message.stickerMessage, "sticker");
 
 						onSticker?.({ jid, socket, stickerBytes });
+					} else if (message.imageMessage) {
+						const imageBytes = await downloadMedia(message.imageMessage, "image");
+
+						onImage?.({ jid, socket, imageBytes });
 					} else if (text) {
 						onText?.({ jid, socket, text });
 					}
@@ -171,9 +191,21 @@ export async function createWhatsAppClient({
 		onStickerMessage: (cb) => {
 			onSticker = cb;
 		},
+		onImageMessage: (cb) => {
+			onImage = cb;
+		},
 		shutdown: () => {
 			shuttingDown = true;
 			currentSocket?.end(undefined);
 		},
 	};
+}
+
+const STICKER_SIZE = 512;
+
+export async function imageToSticker(imageBytes: Buffer): Promise<Buffer> {
+	return sharp(imageBytes)
+		.resize(STICKER_SIZE, STICKER_SIZE, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+		.webp()
+		.toBuffer();
 }

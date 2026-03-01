@@ -1,17 +1,18 @@
 import type { CommandParams } from "../_lib/command-router.js";
+import { imageToSticker } from "../_lib/whatsapp.js";
 import type { Context } from "../messages/types.js";
 import { Sticker, UnsavedSticker } from "./index.js";
+
+type WithRequired<T, K extends keyof T> = T & { [P in K]-?: T[P] };
+
+type SaveStickerParams = WithRequired<Omit<CommandParams<Context>, "args">, "sticker">;
 
 export async function saveSticker({
 	userId,
 	logger,
 	sticker: stickerBytes,
 	sendText,
-}: Omit<CommandParams<Context>, "args">): Promise<void> {
-	if (!stickerBytes) {
-		return await sendText("Nenhuma figurinha encontrada. Envie uma figurinha primeiro.");
-	}
-
+}: SaveStickerParams): Promise<void> {
 	const sticker = await new UnsavedSticker({ userId, data: stickerBytes }).save();
 
 	logger.info({ stickerId: sticker.id }, "Sticker saved");
@@ -19,6 +20,28 @@ export async function saveSticker({
 	const existingTagsMessage = sticker.tags.length > 0 ? `\n\nTags atuais: ${sticker.tags.join(", ")}` : "";
 
 	await sendText(`Figurinha recebida!${existingTagsMessage}\n\nUse *!tag (ou !t) tag1 tag2 ...* para marcá-la.`);
+}
+
+type SaveImageAsStickerParams = WithRequired<Omit<CommandParams<Context>, "args">, "image">;
+
+export async function saveImageAsSticker({
+	userId,
+	logger,
+	image: imageBytes,
+	sendText,
+	sendSticker,
+}: SaveImageAsStickerParams): Promise<void> {
+	const stickerBytes = await imageToSticker(imageBytes);
+
+	const sticker = await new UnsavedSticker({ userId, data: stickerBytes }).save();
+
+	logger.info({ stickerId: sticker.id }, "Sticker saved");
+
+	const existingTagsMessage = sticker.tags.length > 0 ? `\n\nTags atuais: ${sticker.tags.join(", ")}` : "";
+
+	await sendText(`Imagem recebida e convertida para figurinha!${existingTagsMessage}`);
+	await sendSticker(stickerBytes);
+	await sendText(`Use *!tag (ou !t) tag1 tag2 ...* para marcá-la.`);
 }
 
 export async function tagSticker({ args, logger, userId, sendText }: CommandParams<Context>): Promise<void> {
