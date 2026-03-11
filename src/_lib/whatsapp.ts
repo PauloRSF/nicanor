@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import {
 	DisconnectReason,
 	downloadContentFromMessage,
@@ -8,20 +9,27 @@ import {
 	useMultiFileAuthState,
 	type WASocket,
 } from "baileys";
+import _ffmpegPath from "ffmpeg-static";
 import qrcode from "qrcode-terminal";
 import sharp from "sharp";
 
 import { logger } from "./logger.js";
 
+const ffmpegPath = _ffmpegPath as unknown as string | null;
+
 type MessageContext = { jid: string; socket: WASocket };
 type TextMessageEvent = MessageContext & { text: string };
 type StickerMessageEvent = MessageContext & { stickerBytes: Buffer };
 type ImageMessageEvent = MessageContext & { imageBytes: Buffer };
+type GifMessageEvent = MessageContext & { gifBytes: Buffer };
+type VideoMessageEvent = MessageContext & { videoBytes: Buffer };
 
 export type WhatsAppClient = {
 	onTextMessage: (cb: (event: TextMessageEvent) => void) => void;
 	onStickerMessage: (cb: (event: StickerMessageEvent) => void) => void;
 	onImageMessage: (cb: (event: ImageMessageEvent) => void) => void;
+	onGifMessage: (cb: (event: GifMessageEvent) => void) => void;
+	onVideoMessage: (cb: (event: VideoMessageEvent) => void) => void;
 	shutdown: () => void;
 };
 
@@ -30,8 +38,8 @@ const DEFAULT_BASE_DELAY_MS = 2_000;
 const MAX_STICKER_BYTES = 2 * 1024 * 1024;
 
 async function downloadMedia(
-	message: proto.Message.IStickerMessage | proto.Message.IImageMessage,
-	type: "sticker" | "image",
+	message: proto.Message.IStickerMessage | proto.Message.IImageMessage | proto.Message.IVideoMessage,
+	type: "sticker" | "image" | "video",
 ): Promise<Buffer> {
 	const stream = await downloadContentFromMessage(message, type);
 
@@ -70,6 +78,8 @@ export async function createWhatsAppClient({
 	let onText: ((event: TextMessageEvent) => void) | null = null;
 	let onSticker: ((event: StickerMessageEvent) => void) | null = null;
 	let onImage: ((event: ImageMessageEvent) => void) | null = null;
+	let onGif: ((event: GifMessageEvent) => void) | null = null;
+	let onVideo: ((event: VideoMessageEvent) => void) | null = null;
 
 	let connectedAt = 0;
 
@@ -168,6 +178,14 @@ export async function createWhatsAppClient({
 						const imageBytes = await downloadMedia(message.imageMessage, "image");
 
 						onImage?.({ jid, socket, imageBytes });
+					} else if (message.videoMessage?.gifPlayback) {
+						const gifBytes = await downloadMedia(message.videoMessage, "video");
+
+						onGif?.({ jid, socket, gifBytes });
+					} else if (message.videoMessage) {
+						const videoBytes = await downloadMedia(message.videoMessage, "video");
+
+						onVideo?.({ jid, socket, videoBytes });
 					} else if (text) {
 						onText?.({ jid, socket, text });
 					}
@@ -194,6 +212,12 @@ export async function createWhatsAppClient({
 		onImageMessage: (cb) => {
 			onImage = cb;
 		},
+		onGifMessage: (cb) => {
+			onGif = cb;
+		},
+		onVideoMessage: (cb) => {
+			onVideo = cb;
+		},
 		shutdown: () => {
 			shuttingDown = true;
 			currentSocket?.end(undefined);
@@ -208,4 +232,38 @@ export async function imageToSticker(imageBytes: Buffer): Promise<Buffer> {
 		.resize(STICKER_SIZE, STICKER_SIZE, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
 		.webp()
 		.toBuffer();
+}
+
+export function gifToSticker(mp4Bytes: Buffer): Promise<Buffer> {
+	return new Promise((resolve, reject) => {
+		if (!ffmpegPath) return reject(new Error("ffmpeg-static binary not found"));
+
+		const ffmpeg = spawn(ffmpegPath, [
+			"-i",
+			"pipe:0",
+			"-vf",
+			`scale=${STICKER_SIZE}:${STICKER_SIZE}:force_original_aspect_ratio=decrease,pad=${STICKER_SIZE}:${STICKER_SIZE}:-1:-1:color=#00000000,fps=15`,
+			"-loop",
+			"0",
+			"-an",
+			"-f",
+			"webp",
+			"pipe:1",
+		]);
+
+		const chunks: Buffer[] = [];
+
+		ffmpeg.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+		ffmpeg.stderr.on("data", () => {});
+
+		ffmpeg.on("close", (code) => {
+			if (code !== 0) return reject(new Error(`ffmpeg exited with code ${code}`));
+			resolve(Buffer.concat(chunks));
+		});
+
+		ffmpeg.on("error", (err) => reject(new Error(`ffmpeg failed to start: ${err.message}`)));
+
+		ffmpeg.stdin.write(mp4Bytes);
+		ffmpeg.stdin.end();
+	});
 }

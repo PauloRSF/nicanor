@@ -1,5 +1,5 @@
 import type { CommandParams } from "../_lib/command-router.js";
-import { imageToSticker } from "../_lib/whatsapp.js";
+import { gifToSticker, imageToSticker } from "../_lib/whatsapp.js";
 import type { Context } from "../messages/types.js";
 import { Sticker, UnsavedSticker } from "./index.js";
 
@@ -42,6 +42,50 @@ export async function saveImageAsSticker({
 	await sendText(`Imagem recebida e convertida para figurinha!${existingTagsMessage}`);
 	await sendSticker(stickerBytes);
 	await sendText(`Use *!tag (ou !t) tag1 tag2 ...* para marcá-la.`);
+}
+
+type SaveGifAsStickerParams = WithRequired<Omit<CommandParams<Context>, "args">, "gif">;
+
+export async function saveGifAsSticker({
+	userId,
+	logger,
+	gif: mp4Bytes,
+	sendText,
+	sendSticker,
+}: SaveGifAsStickerParams): Promise<void> {
+	const stickerBytes = await gifToSticker(mp4Bytes);
+
+	const sticker = await new UnsavedSticker({ userId, data: stickerBytes }).save();
+
+	logger.info({ stickerId: sticker.id }, "Animated sticker saved from GIF");
+
+	const existingTagsMessage = sticker.tags.length > 0 ? `\n\nTags atuais: ${sticker.tags.join(", ")}` : "";
+
+	await sendText(`GIF recebido e convertido para figurinha!${existingTagsMessage}`);
+	await sendSticker(stickerBytes);
+	await sendText("Use *!tag (ou !t) tag1 tag2 ...* para marcá-la.");
+}
+
+type SaveVideoAsStickerParams = WithRequired<Omit<CommandParams<Context>, "args">, "video">;
+
+export async function saveVideoAsSticker({
+	userId,
+	logger,
+	video: mp4Bytes,
+	sendText,
+	sendSticker,
+}: SaveVideoAsStickerParams): Promise<void> {
+	const stickerBytes = await gifToSticker(mp4Bytes);
+
+	const sticker = await new UnsavedSticker({ userId, data: stickerBytes }).save();
+
+	logger.info({ stickerId: sticker.id }, "Animated sticker saved from video");
+
+	const existingTagsMessage = sticker.tags.length > 0 ? `\n\nTags atuais: ${sticker.tags.join(", ")}` : "";
+
+	await sendText(`Vídeo recebido e convertido para figurinha animada!${existingTagsMessage}`);
+	await sendSticker(stickerBytes);
+	await sendText("Use *!tag (ou !t) tag1 tag2 ...* para marcá-la.");
 }
 
 export async function tagSticker({ args, logger, userId, sendText }: CommandParams<Context>): Promise<void> {
