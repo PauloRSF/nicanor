@@ -1,6 +1,6 @@
 # Nicanor 🤖
 
-Nicanor is a WhatsApp bot for tagging and searching stickers.
+Nicanor is a WhatsApp bot for creating, tagging and searching stickers.
 
 ## Motivation
 
@@ -10,13 +10,15 @@ However, since i have tons of them and whatsapp doesn't have a proper sticker se
 
 ## How does Nicanor solve this?
 
-It provides a way of searching for stickers in an efficient way: you can send it a sticker, specify tags and later, when you want to use it, search for those tags.
+It provides a way of searching for stickers in an efficient way: you can send it a sticker, an image or a GIF, specify tags and later, when you want to use it, search for those tags.
 
 ### Demo
 
 _TBA_
 
 ## Tech Stack
+
+[ffmpeg-static](https://github.com/eugeneware/ffmpeg-static): bundled ffmpeg for turning GIF-playback videos and GIF files into animated WebP stickers
 
 [Baileys](https://github.com/WhiskeySockets/Baileys): used to connect to WhatsApp and receive/send messages
 

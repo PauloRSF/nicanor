@@ -5,6 +5,7 @@ export type Context = {
 	logger: Logger;
 	sticker?: Buffer;
 	image?: Buffer;
+	gif?: Buffer;
 	sendText: (text: string) => Promise<void>;
 	sendSticker: (bytes: Buffer) => Promise<void>;
 };
