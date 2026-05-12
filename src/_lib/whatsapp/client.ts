@@ -1,13 +1,15 @@
 import {
-  DisconnectReason,
-  downloadContentFromMessage,
-  fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore,
-  makeWASocket,
-  type proto,
-  useMultiFileAuthState,
-  type WASocket,
+	DisconnectReason,
+	downloadContentFromMessage,
+	fetchLatestBaileysVersion,
+	makeCacheableSignalKeyStore,
+	makeWASocket,
+	type proto,
+	useMultiFileAuthState,
+	type WAMessage,
+	type WASocket,
 } from "baileys";
+import PQueue from "p-queue";
 import qrcode from "qrcode-terminal";
 
 import { logger } from "../logger.js";
@@ -17,243 +19,274 @@ type TextMessageEvent = MessageContext & { text: string };
 type StickerMessageEvent = MessageContext & { stickerBytes: Buffer };
 type ImageMessageEvent = MessageContext & { imageBytes: Buffer };
 type GifMessageEvent = MessageContext & {
-  gifBytes: Buffer;
-  gifInputExt: "mp4" | "gif";
+	gifBytes: Buffer;
+	gifInputExt: "mp4" | "gif";
 };
 
+type MessageEventHandler<T> = (event: T) => void | Promise<void>;
+
 export type WhatsAppClient = {
-  onTextMessage: (cb: (event: TextMessageEvent) => void) => void;
-  onStickerMessage: (cb: (event: StickerMessageEvent) => void) => void;
-  onImageMessage: (cb: (event: ImageMessageEvent) => void) => void;
-  onGifMessage: (cb: (event: GifMessageEvent) => void) => void;
-  shutdown: () => void;
+	onTextMessage: (cb: MessageEventHandler<TextMessageEvent>) => void;
+	onStickerMessage: (cb: MessageEventHandler<StickerMessageEvent>) => void;
+	onImageMessage: (cb: MessageEventHandler<ImageMessageEvent>) => void;
+	onGifMessage: (cb: MessageEventHandler<GifMessageEvent>) => void;
+	shutdown: () => void;
 };
 
 const DEFAULT_MAX_RETRIES = 10;
 const DEFAULT_BASE_DELAY_MS = 2_000;
 
 const MAX_MEDIA_SIZE_BYTES = {
-  sticker: 2 * 1024 * 1024,
-  image: 4 * 1024 * 1024,
-  gif: 8 * 1024 * 1024,
-  document: 8 * 1024 * 1024,
+	sticker: 2 * 1024 * 1024,
+	image: 4 * 1024 * 1024,
+	gif: 8 * 1024 * 1024,
+	document: 8 * 1024 * 1024,
 };
 
 function isGifDocumentFile(doc: proto.Message.IDocumentMessage): boolean {
-  const mime = doc.mimetype?.toLowerCase() ?? "";
-  if (mime === "image/gif" || mime.startsWith("image/gif;")) return true;
-  const name = doc.fileName?.toLowerCase() ?? "";
-  return name.endsWith(".gif");
+	const mime = doc.mimetype?.toLowerCase() ?? "";
+	if (mime === "image/gif" || mime.startsWith("image/gif;")) return true;
+	const name = doc.fileName?.toLowerCase() ?? "";
+	return name.endsWith(".gif");
 }
 
 async function downloadMediaToBuffer(
-  message:
-    | proto.Message.IStickerMessage
-    | proto.Message.IImageMessage
-    | proto.Message.IVideoMessage
-    | proto.Message.IDocumentMessage,
-  type: "sticker" | "image" | "gif" | "document",
+	message:
+		| proto.Message.IStickerMessage
+		| proto.Message.IImageMessage
+		| proto.Message.IVideoMessage
+		| proto.Message.IDocumentMessage,
+	type: "sticker" | "image" | "gif" | "document",
 ): Promise<Buffer> {
-  const stream = await downloadContentFromMessage(message, type);
+	const stream = await downloadContentFromMessage(message, type);
 
-  const chunks: Buffer[] = [];
-  let totalBytes = 0;
-  const maxBytes = MAX_MEDIA_SIZE_BYTES[type];
+	const chunks: Buffer[] = [];
+	let totalBytes = 0;
+	const maxBytes = MAX_MEDIA_SIZE_BYTES[type];
 
-  for await (const chunk of stream) {
-    totalBytes += chunk.length;
-    if (totalBytes > maxBytes) {
-      throw new Error(`Media (type: ${type}) exceeds ${maxBytes} byte limit`);
-    }
-    chunks.push(chunk as Buffer);
-  }
+	for await (const chunk of stream) {
+		totalBytes += chunk.length;
+		if (totalBytes > maxBytes) {
+			throw new Error(`Media (type: ${type}) exceeds ${maxBytes} byte limit`);
+		}
+		chunks.push(chunk as Buffer);
+	}
 
-  return Buffer.concat(chunks);
+	return Buffer.concat(chunks);
 }
 
 type CreateWhatsAppClientOptions = {
-  maxRetries?: number;
-  baseDelayMs?: number;
+	maxRetries?: number;
+	baseDelayMs?: number;
 };
 
 export async function createWhatsAppClient({
-  maxRetries = DEFAULT_MAX_RETRIES,
-  baseDelayMs = DEFAULT_BASE_DELAY_MS,
+	maxRetries = DEFAULT_MAX_RETRIES,
+	baseDelayMs = DEFAULT_BASE_DELAY_MS,
 }: CreateWhatsAppClientOptions = {}): Promise<WhatsAppClient> {
-  const { version } = await fetchLatestBaileysVersion();
-  const { state, saveCreds } = await useMultiFileAuthState("auth_info");
+	const { version } = await fetchLatestBaileysVersion();
+	const { state, saveCreds } = await useMultiFileAuthState("auth_info");
 
-  logger.info(`Using WA version ${version.join(".")}`);
+	logger.info(`Using WA version ${version.join(".")}`);
 
-  let shuttingDown = false;
-  let retryCount = 0;
-  let currentSocket: WASocket | null = null;
+	let shuttingDown = false;
+	let retryCount = 0;
+	let currentSocket: WASocket | null = null;
 
-  let onText: ((event: TextMessageEvent) => void) | null = null;
-  let onSticker: ((event: StickerMessageEvent) => void) | null = null;
-  let onImage: ((event: ImageMessageEvent) => void) | null = null;
-  let onGif: ((event: GifMessageEvent) => void) | null = null;
+	let onText: MessageEventHandler<TextMessageEvent> | null = null;
+	let onSticker: MessageEventHandler<StickerMessageEvent> | null = null;
+	let onImage: MessageEventHandler<ImageMessageEvent> | null = null;
+	let onGif: MessageEventHandler<GifMessageEvent> | null = null;
 
-  let connectedAt = 0;
+	let connectedAt = 0;
 
-  let bootResolve: () => void;
-  let bootReject: (err: Error) => void;
-  let booted = false;
+	const incomingQueuesByJid = new Map<string, PQueue>();
 
-  function connectSocket() {
-    const socket = makeWASocket({
-      auth: {
-        creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, logger),
-      },
-      version,
-      printQRInTerminal: false,
-      syncFullHistory: false,
-    });
+	function incomingQueueFor(jid: string): PQueue {
+		let queue = incomingQueuesByJid.get(jid);
 
-    currentSocket = socket;
+		if (!queue) {
+			queue = new PQueue({ concurrency: 1, autoStart: true });
 
-    socket.ev.on("creds.update", saveCreds);
+			queue.once("idle", () => incomingQueuesByJid.delete(jid));
 
-    socket.ev.on("connection.update", (update) => {
-      const { connection, lastDisconnect, qr } = update;
+			incomingQueuesByJid.set(jid, queue);
+		}
 
-      if (qr) {
-        qrcode.generate(qr, { small: true });
-      }
+		return queue;
+	}
 
-      if (connection === "open") {
-        connectedAt = Math.floor(Date.now() / 1000);
-        retryCount = 0;
-        logger.info("Connected to WhatsApp!");
+	function getRemoteIncomingJid(msg: WAMessage): string | null {
+		const { message, key, messageTimestamp } = msg;
 
-        if (!booted) {
-          booted = true;
-          bootResolve();
-        }
-      }
+		if (!message || key.fromMe) return null;
 
-      if (connection === "close") {
-        if (shuttingDown) return;
+		const timestamp = typeof messageTimestamp === "number" ? messageTimestamp : Number(messageTimestamp);
 
-        const statusCode = (
-          lastDisconnect?.error as { output?: { statusCode?: number } }
-        )?.output?.statusCode;
+		if (timestamp < connectedAt) return null;
 
-        if (statusCode === DisconnectReason.loggedOut) {
-          logger.error("Logged out from WhatsApp.");
+		return key.remoteJid ?? null;
+	}
 
-          if (!booted) return bootReject(new Error("Logged out"));
-          else process.exit(1);
-        }
+	function hasDispatchablePayload(message: proto.IMessage): boolean {
+		const text = message.conversation ?? message.extendedTextMessage?.text;
 
-        retryCount++;
+		return (
+			!!message.stickerMessage ||
+			!!message.imageMessage ||
+			message.videoMessage?.gifPlayback === true ||
+			(!!message.documentMessage && isGifDocumentFile(message.documentMessage)) ||
+			!!text
+		);
+	}
 
-        if (retryCount > maxRetries) {
-          const message = `Failed to connect after ${maxRetries} retries`;
+	async function handleIncomingMessage(msg: WAMessage): Promise<void> {
+		const socket = currentSocket;
+		if (!socket) return;
 
-          if (!booted) {
-            return bootReject(new Error(message));
-          } else {
-            logger.error(`${message}. Exiting.`);
-            process.exit(1);
-          }
-        }
+		try {
+			const jid = getRemoteIncomingJid(msg);
 
-        const delay = Math.min(baseDelayMs * 2 ** (retryCount - 1), 60_000);
+			if (!jid) return;
 
-        logger.info(
-          `Retry ${retryCount}/${maxRetries} in ${(delay / 1000).toFixed(0)}s...`,
-        );
+			const { message } = msg;
+			if (!message) return;
 
-        setTimeout(connectSocket, delay);
-      }
-    });
+			const text = message.conversation ?? message.extendedTextMessage?.text;
 
-    socket.ev.on("messages.upsert", async ({ messages }) => {
-      for (const msg of messages) {
-        try {
-          const { message, key, messageTimestamp } = msg;
+			if (message.stickerMessage) {
+				const stickerBytes = await downloadMediaToBuffer(message.stickerMessage, "sticker");
 
-          if (!message || key.fromMe) continue;
+				await Promise.resolve(onSticker?.({ jid, socket, stickerBytes }));
+			} else if (message.imageMessage) {
+				const imageBytes = await downloadMediaToBuffer(message.imageMessage, "image");
 
-          const timestamp =
-            typeof messageTimestamp === "number"
-              ? messageTimestamp
-              : Number(messageTimestamp);
+				await Promise.resolve(onImage?.({ jid, socket, imageBytes }));
+			} else if (message.videoMessage?.gifPlayback === true) {
+				const gifBytes = await downloadMediaToBuffer(message.videoMessage, "gif");
 
-          if (timestamp < connectedAt) continue;
+				await Promise.resolve(onGif?.({ jid, socket, gifBytes, gifInputExt: "mp4" }));
+			} else if (message.documentMessage && isGifDocumentFile(message.documentMessage)) {
+				const gifBytes = await downloadMediaToBuffer(message.documentMessage, "document");
 
-          const jid = key.remoteJid;
+				await Promise.resolve(onGif?.({ jid, socket, gifBytes, gifInputExt: "gif" }));
+			} else if (text) {
+				await Promise.resolve(onText?.({ jid, socket, text }));
+			}
+		} catch (err) {
+			logger.error(err, "Error processing incoming message");
+		}
+	}
 
-          if (!jid) continue;
+	let bootResolve: () => void;
+	let bootReject: (err: Error) => void;
+	let booted = false;
 
-          const text =
-            message.conversation ?? message.extendedTextMessage?.text;
+	function connectSocket() {
+		const socket = makeWASocket({
+			auth: {
+				creds: state.creds,
+				keys: makeCacheableSignalKeyStore(state.keys, logger),
+			},
+			version,
+			printQRInTerminal: false,
+			syncFullHistory: false,
+		});
 
-          if (message.stickerMessage) {
-            const stickerBytes = await downloadMediaToBuffer(
-              message.stickerMessage,
-              "sticker",
-            );
+		currentSocket = socket;
 
-            onSticker?.({ jid, socket, stickerBytes });
-          } else if (message.imageMessage) {
-            const imageBytes = await downloadMediaToBuffer(
-              message.imageMessage,
-              "image",
-            );
+		socket.ev.on("creds.update", saveCreds);
 
-            onImage?.({ jid, socket, imageBytes });
-          } else if (message.videoMessage?.gifPlayback === true) {
-            const gifBytes = await downloadMediaToBuffer(
-              message.videoMessage,
-              "gif",
-            );
+		socket.ev.on("connection.update", (update) => {
+			const { connection, lastDisconnect, qr } = update;
 
-            onGif?.({ jid, socket, gifBytes, gifInputExt: "mp4" });
-          } else if (
-            message.documentMessage &&
-            isGifDocumentFile(message.documentMessage)
-          ) {
-            const gifBytes = await downloadMediaToBuffer(
-              message.documentMessage,
-              "document",
-            );
+			if (qr) {
+				qrcode.generate(qr, { small: true });
+			}
 
-            onGif?.({ jid, socket, gifBytes, gifInputExt: "gif" });
-          } else if (text) {
-            onText?.({ jid, socket, text });
-          }
-        } catch (err) {
-          logger.error(err, "Error processing incoming message");
-        }
-      }
-    });
-  }
+			if (connection === "open") {
+				connectedAt = Math.floor(Date.now() / 1000);
+				retryCount = 0;
+				logger.info("Connected to WhatsApp!");
 
-  await new Promise<void>((resolve, reject) => {
-    bootResolve = resolve;
-    bootReject = reject;
-    connectSocket();
-  });
+				if (!booted) {
+					booted = true;
+					bootResolve();
+				}
+			}
 
-  return {
-    onTextMessage: (cb) => {
-      onText = cb;
-    },
-    onStickerMessage: (cb) => {
-      onSticker = cb;
-    },
-    onImageMessage: (cb) => {
-      onImage = cb;
-    },
-    onGifMessage: (cb) => {
-      onGif = cb;
-    },
-    shutdown: () => {
-      shuttingDown = true;
-      currentSocket?.end(undefined);
-    },
-  };
+			if (connection === "close") {
+				if (shuttingDown) return;
+
+				const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } })?.output?.statusCode;
+
+				if (statusCode === DisconnectReason.loggedOut) {
+					logger.error("Logged out from WhatsApp.");
+
+					if (!booted) return bootReject(new Error("Logged out"));
+					else process.exit(1);
+				}
+
+				retryCount++;
+
+				if (retryCount > maxRetries) {
+					const message = `Failed to connect after ${maxRetries} retries`;
+
+					if (!booted) {
+						return bootReject(new Error(message));
+					} else {
+						logger.error(`${message}. Exiting.`);
+						process.exit(1);
+					}
+				}
+
+				const delay = Math.min(baseDelayMs * 2 ** (retryCount - 1), 60_000);
+
+				logger.info(`Retry ${retryCount}/${maxRetries} in ${(delay / 1000).toFixed(0)}s...`);
+
+				setTimeout(connectSocket, delay);
+			}
+		});
+
+		socket.ev.on("messages.upsert", ({ messages }) => {
+			for (const msg of messages) {
+				const jid = getRemoteIncomingJid(msg);
+
+				if (!jid) continue;
+
+				if (!msg.message || !hasDispatchablePayload(msg.message)) continue;
+
+				void incomingQueueFor(jid)
+					.add(() => handleIncomingMessage(msg))
+					.catch((err) => {
+						logger.error(err, "Incoming message queue error");
+					});
+			}
+		});
+	}
+
+	await new Promise<void>((resolve, reject) => {
+		bootResolve = resolve;
+		bootReject = reject;
+		connectSocket();
+	});
+
+	return {
+		onTextMessage: (cb) => {
+			onText = cb;
+		},
+		onStickerMessage: (cb) => {
+			onSticker = cb;
+		},
+		onImageMessage: (cb) => {
+			onImage = cb;
+		},
+		onGifMessage: (cb) => {
+			onGif = cb;
+		},
+		shutdown: () => {
+			shuttingDown = true;
+			currentSocket?.end(undefined);
+		},
+	};
 }
