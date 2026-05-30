@@ -22,6 +22,9 @@ const GIF_TO_STICKER_CONVERSION_PARAMS_ATTEMPTS: ConversionParams[] = [
 	{ quality: 76, size: STICKER_SIZE },
 	{ maxFps: 18, quality: 82, size: STICKER_SIZE },
 	{ maxFps: 18, quality: 76, size: 448 },
+	{ maxFps: 18, quality: 60, size: 448 },
+	{ maxFps: 18, quality: 60, size: 320 },
+	{ maxFps: 15, quality: 50, size: 320 },
 ];
 
 /** https://faq.whatsapp.com/1056840314992666 */
@@ -34,7 +37,10 @@ export type ConvertAnimationJob = {
 };
 
 export async function convertAnimationToSticker(job: ConvertAnimationJob): Promise<Buffer> {
-	const logger = rootLogger.child({ userId: job.userId, class: "gif-conversion" });
+	const logger = rootLogger.child({
+		userId: job.userId,
+		class: "gif-conversion",
+	});
 
 	const { userId, gifBytes, inputExt } = job;
 	const filesPrefix = `${userId}-${Date.now()}`;
@@ -56,7 +62,9 @@ export async function convertAnimationToSticker(job: ConvertAnimationJob): Promi
 			});
 
 			try {
-				await execFileAsync(ffmpegPath, options, { maxBuffer: 10 * 1024 * 1024 });
+				await execFileAsync(ffmpegPath, options, {
+					maxBuffer: 10 * 1024 * 1024,
+				});
 
 				const out = await readFile(outputPath);
 
