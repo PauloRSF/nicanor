@@ -25,6 +25,7 @@ const GIF_TO_STICKER_CONVERSION_PARAMS_ATTEMPTS: ConversionParams[] = [
 	{ maxFps: 18, quality: 60, size: 448 },
 	{ maxFps: 18, quality: 60, size: 320 },
 	{ maxFps: 15, quality: 50, size: 320 },
+	{ maxFps: 15, quality: 40, size: 256 },
 ];
 
 /** https://faq.whatsapp.com/1056840314992666 */
