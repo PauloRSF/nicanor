@@ -5,10 +5,12 @@ import { logger } from "../_lib/logger.js";
 import { createWhatsAppClient } from "../_lib/whatsapp/client.js";
 import {
 	deleteSticker,
+	importTwitterGif,
 	saveGifAsSticker,
 	saveImageAsSticker,
 	saveSticker,
 	searchStickers,
+	sendRawLastSticker,
 	tagSticker,
 } from "../sticker/commands.js";
 import type { Context } from "./types.js";
@@ -28,6 +30,11 @@ function buildContext(socket: WASocket, jid: string) {
 			enrichedLogger.info({ stickerByteLength: bytes.length }, "Sending sticker");
 
 			await socket.sendMessage(jid, { sticker: bytes });
+		},
+		sendImage: async (bytes: Buffer) => {
+			enrichedLogger.info({ imageByteLength: bytes.length }, "Sending image");
+
+			await socket.sendMessage(jid, { image: bytes });
 		},
 	};
 }
@@ -79,6 +86,18 @@ export async function init(): Promise<void> {
 		command: ["!delete", "!d"],
 		help: "Apaga a última figurinha e suas tags",
 		handler: deleteSticker,
+	});
+
+	commandRouter.command({
+		command: ["!raw", "!r"],
+		help: "Envia o arquivo da última figurinha",
+		handler: sendRawLastSticker,
+	});
+
+	commandRouter.command({
+		command: ["!x", "!twitter"],
+		help: "Converte um GIF do X/Twitter em figurinha (informe o link)",
+		handler: importTwitterGif,
 	});
 
 	client.onTextMessage(async ({ jid, socket, text }) => {

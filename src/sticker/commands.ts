@@ -1,7 +1,11 @@
 import type { CommandParams } from "../_lib/command-router.js";
+import { fetchUrlToBuffer } from "../_lib/fetch-url.js";
 import { gifToSticker, imageToSticker } from "../_lib/whatsapp/media.js";
 import type { Context } from "../messages/types.js";
+import { resolveTwitterGif, TwitterResolveError } from "../twitter/resolve.js";
 import { Sticker, UnsavedSticker } from "./index.js";
+
+const MAX_GIF_BYTES = 8 * 1024 * 1024;
 
 type WithRequired<T, K extends keyof T> = T & { [P in K]-?: T[P] };
 
@@ -154,4 +158,69 @@ export async function deleteSticker({ userId, logger, sendText }: CommandParams<
 	await sticker.delete();
 
 	return await sendText("A figurinha e suas tags foram apagadas.");
+}
+
+export async function sendRawLastSticker({
+	userId,
+	logger,
+	sendText,
+	sendImage,
+}: CommandParams<Context>): Promise<void> {
+	const sticker = await Sticker.getLastByUserId(userId);
+
+	if (!sticker) {
+		return await sendText("Nenhuma figurinha encontrada. Envie uma figurinha primeiro.");
+	}
+
+	if (!(await sticker.hasFile())) {
+		return await sendText("Arquivo da figurinha não encontrado.");
+	}
+
+	const bytes = await sticker.getFile();
+
+	if (bytes.length === 0) {
+		return await sendText("Arquivo da figurinha não encontrado.");
+	}
+
+	logger.info({ stickerId: sticker.id, stickerByteLength: bytes.length }, "Sending raw sticker image");
+
+	await sendImage(bytes);
+	await sendText("Arquivo da figurinha enviado.");
+}
+
+export async function importTwitterGif({
+	args,
+	userId,
+	logger,
+	sendText,
+	sendSticker,
+	sendImage,
+}: CommandParams<Context>): Promise<void> {
+	const url = args[0];
+
+	if (!url) {
+		return await sendText("Informe o link do X/Twitter. Ex: *!x https://x.com/.../status/...*");
+	}
+
+	try {
+		const { mp4Url } = await resolveTwitterGif(url);
+		const gifBytes = await fetchUrlToBuffer(mp4Url, MAX_GIF_BYTES);
+
+		await saveGifAsSticker({
+			userId,
+			logger,
+			gif: gifBytes,
+			gifInputExt: "mp4",
+			sendText,
+			sendSticker,
+			sendImage,
+		});
+	} catch (error) {
+		if (error instanceof TwitterResolveError) {
+			return await sendText(error.userMessage);
+		}
+
+		logger.error(error, "Failed to import Twitter GIF");
+		await sendText("Não consegui converter este GIF para figurinha.");
+	}
 }
