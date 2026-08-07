@@ -58,3 +58,33 @@ export function getAnimatedWebpOptions({ inputPath, outputPath, maxFps, quality,
 		outputPath,
 	];
 }
+
+type GetGifToMp4OptionsParams = {
+	inputPath: string;
+	outputPath: string;
+};
+
+export function getGifToMp4Options({ inputPath, outputPath }: GetGifToMp4OptionsParams) {
+	return [
+		"-y",
+		"-hide_banner",
+		"-loglevel",
+		"error",
+		"-i",
+		inputPath,
+		"-an",
+		"-vcodec",
+		"libx264",
+		"-pix_fmt",
+		"yuv420p",
+		"-vf",
+		"scale=trunc(iw/2)*2:trunc(ih/2)*2",
+		"-crf",
+		"23",
+		"-preset",
+		"fast",
+		"-movflags",
+		"+faststart",
+		outputPath,
+	];
+}

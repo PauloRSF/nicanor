@@ -1,9 +1,20 @@
 import sharp from "sharp";
 
+import { convertAnimatedStickerToGifPlayback } from "../../gifs/conversion.js";
 import { convertGifToWebp } from "../../gifs/pool.js";
 import { logger } from "../logger.js";
 
 export const STICKER_SIZE = 512;
+
+export async function isAnimatedSticker(stickerBytes: Buffer): Promise<boolean> {
+	const { pages } = await sharp(stickerBytes).metadata();
+
+	return (pages ?? 1) > 1;
+}
+
+export async function stickerToGifPlayback(stickerBytes: Buffer): Promise<Buffer> {
+	return convertAnimatedStickerToGifPlayback(stickerBytes);
+}
 
 export async function imageToSticker(imageBytes: Buffer): Promise<Buffer> {
 	return sharp(imageBytes)

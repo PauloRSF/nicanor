@@ -36,6 +36,11 @@ function buildContext(socket: WASocket, jid: string) {
 
 			await socket.sendMessage(jid, { image: bytes });
 		},
+		sendGif: async (bytes: Buffer) => {
+			enrichedLogger.info({ gifByteLength: bytes.length }, "Sending gif playback");
+
+			await socket.sendMessage(jid, { video: bytes, gifPlayback: true });
+		},
 	};
 }
 

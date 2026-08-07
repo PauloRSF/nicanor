@@ -9,4 +9,5 @@ export type Context = {
 	sendText: (text: string) => Promise<void>;
 	sendSticker: (bytes: Buffer) => Promise<void>;
 	sendImage: (bytes: Buffer) => Promise<void>;
+	sendGif: (bytes: Buffer) => Promise<void>;
 };

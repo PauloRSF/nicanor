@@ -1,6 +1,6 @@
 import type { CommandParams } from "../_lib/command-router.js";
 import { fetchUrlToBuffer } from "../_lib/fetch-url.js";
-import { gifToSticker, imageToSticker } from "../_lib/whatsapp/media.js";
+import { gifToSticker, imageToSticker, isAnimatedSticker, stickerToGifPlayback } from "../_lib/whatsapp/media.js";
 import type { Context } from "../messages/types.js";
 import { resolveTwitterGif, TwitterResolveError } from "../twitter/resolve.js";
 import { Sticker, UnsavedSticker } from "./index.js";
@@ -165,7 +165,10 @@ export async function sendRawLastSticker({
 	logger,
 	sendText,
 	sendImage,
+	sendGif,
 }: CommandParams<Context>): Promise<void> {
+	await sendText("Enviando arquivo da figurinha...");
+
 	const sticker = await Sticker.getLastByUserId(userId);
 
 	if (!sticker) {
@@ -182,10 +185,21 @@ export async function sendRawLastSticker({
 		return await sendText("Arquivo da figurinha não encontrado.");
 	}
 
-	logger.info({ stickerId: sticker.id, stickerByteLength: bytes.length }, "Sending raw sticker image");
+	if (await isAnimatedSticker(bytes)) {
+		logger.info({ stickerId: sticker.id, stickerByteLength: bytes.length }, "Sending raw animated sticker as gif");
 
-	await sendImage(bytes);
-	await sendText("Arquivo da figurinha enviado.");
+		try {
+			const gifBytes = await stickerToGifPlayback(bytes);
+			await sendGif(gifBytes);
+		} catch (error) {
+			logger.error(error, "Failed to convert or send animated sticker as gif playback");
+			return await sendText("Não consegui enviar esta figurinha animada como GIF.");
+		}
+	} else {
+		logger.info({ stickerId: sticker.id, stickerByteLength: bytes.length }, "Sending raw sticker image");
+
+		await sendImage(bytes);
+	}
 }
 
 export async function importTwitterGif({
@@ -195,6 +209,7 @@ export async function importTwitterGif({
 	sendText,
 	sendSticker,
 	sendImage,
+	sendGif,
 }: CommandParams<Context>): Promise<void> {
 	const url = args[0];
 
@@ -214,6 +229,7 @@ export async function importTwitterGif({
 			sendText,
 			sendSticker,
 			sendImage,
+			sendGif,
 		});
 	} catch (error) {
 		if (error instanceof TwitterResolveError) {
