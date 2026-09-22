@@ -1,6 +1,6 @@
 import type { WASocket } from "baileys";
 
-import { CommandRouter } from "../_lib/command-router.js";
+import { type CommandParams, CommandRouter } from "../_lib/command-router.js";
 import { logger } from "../_lib/logger.js";
 import { createWhatsAppClient } from "../_lib/whatsapp/client.js";
 import {
@@ -13,7 +13,11 @@ import {
 	sendRawLastSticker,
 	tagSticker,
 } from "../sticker/commands.js";
+import { isStickerTaggingEnabled, toggleStickerTagging } from "../user-settings/index.js";
 import type { Context } from "./types.js";
+
+const TAGGING_DISABLED_REPLY = "A marcação de tags está desativada. Use *!habilitartags* para ativá-la.";
+const TAGGING_COMMANDS = new Set(["!tag", "!t", "!search", "!s"]);
 
 function buildContext(socket: WASocket, jid: string) {
 	const enrichedLogger = logger.child({ jid });
@@ -44,6 +48,28 @@ function buildContext(socket: WASocket, jid: string) {
 	};
 }
 
+function requireStickerTagging(
+	handler: (context: CommandParams<Context>) => Promise<void>,
+): (context: CommandParams<Context>) => Promise<void> {
+	return async (context) => {
+		if (!(await isStickerTaggingEnabled(context.userId))) {
+			return await context.sendText(TAGGING_DISABLED_REPLY);
+		}
+
+		return await handler(context);
+	};
+}
+
+async function toggleTaggingCommand({ userId, sendText }: CommandParams<Context>): Promise<void> {
+	const enabled = await toggleStickerTagging(userId);
+
+	if (enabled) {
+		return await sendText("Marcação de tags ativada. Use *!tag* para marcar e *!search* para buscar.");
+	}
+
+	return await sendText("Marcação de tags desativada.");
+}
+
 let shutdownFn: (() => void) | null = null;
 
 export function shutdown(): void {
@@ -69,27 +95,45 @@ export async function init(): Promise<void> {
 	commandRouter.command({
 		command: ["!help", "!h"],
 		help: "Mostra esta mensagem",
-		handler: ({ sendText }) =>
-			sendText(
-				`Oi, eu sou o Nicanor 🤖!\n\nVocê pode me enviar figurinhas, GIFs (reprodução no WhatsApp ou arquivo .gif), ou imagens para marcá-las com tags.\n\nMeus comandos são:\n\n${commandRouter.helpText()}`,
-			),
+		handler: async ({ userId, sendText }) => {
+			const taggingEnabled = await isStickerTaggingEnabled(userId);
+			const intro = taggingEnabled
+				? "Oi, eu sou o Nicanor 🤖!\n\nVocê pode me enviar figurinhas, GIFs (reprodução no WhatsApp ou arquivo .gif), ou imagens para marcá-las com tags.\n\nMeus comandos são:\n\n"
+				: "Oi, eu sou o Nicanor 🤖!\n\nVocê pode me enviar figurinhas, GIFs (reprodução no WhatsApp ou arquivo .gif), ou imagens.\n\nMeus comandos são:\n\n";
+
+			const help = commandRouter.helpText((cmd) => {
+				if (!taggingEnabled && cmd.command.some((alias) => TAGGING_COMMANDS.has(alias))) {
+					return false;
+				}
+
+				return true;
+			});
+
+			await sendText(`${intro}${help}`);
+		},
+	});
+
+	commandRouter.command({
+		command: ["!habilitartags"],
+		help: "Ativa ou desativa a marcação de figurinhas com tags",
+		handler: toggleTaggingCommand,
 	});
 
 	commandRouter.command({
 		command: ["!tag", "!t"],
 		help: "Marca a última figurinha com tags",
-		handler: tagSticker,
+		handler: requireStickerTagging(tagSticker),
 	});
 
 	commandRouter.command({
 		command: ["!search", "!s"],
 		help: "Busca figurinhas por tags",
-		handler: searchStickers,
+		handler: requireStickerTagging(searchStickers),
 	});
 
 	commandRouter.command({
 		command: ["!delete", "!d"],
-		help: "Apaga a última figurinha e suas tags",
+		help: "Apaga a última figurinha",
 		handler: deleteSticker,
 	});
 

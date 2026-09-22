@@ -138,11 +138,9 @@ export async function convertAnimatedStickerToGifPlayback(webpBytes: Buffer): Pr
 		const delayMs = meta.delay?.[0] ?? 100;
 		const fps = Math.min(30, Math.max(1, Math.round(1000 / delayMs)));
 
-		await execFileAsync(
-			ffmpegPath,
-			getGifToMp4Options({ inputPath, outputPath, fps }),
-			{ maxBuffer: 10 * 1024 * 1024 },
-		);
+		await execFileAsync(ffmpegPath, getGifToMp4Options({ inputPath, outputPath, fps }), {
+			maxBuffer: 10 * 1024 * 1024,
+		});
 
 		return await readFile(outputPath);
 	} finally {

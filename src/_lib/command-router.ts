@@ -9,7 +9,7 @@ type CommandOptions<TContext> = {
 type CommandRouterType<TContext> = {
 	handle: (context: TContext, text: string) => Promise<void>;
 	command: (options: CommandOptions<TContext>) => void;
-	helpText: () => string;
+	helpText: (include?: (options: CommandOptions<TContext>) => boolean) => string;
 };
 
 export function CommandRouter<TContext>(): CommandRouterType<TContext> {
@@ -23,8 +23,9 @@ export function CommandRouter<TContext>(): CommandRouterType<TContext> {
 		}
 	};
 
-	const helpText = () =>
+	const helpText = (include?: (options: CommandOptions<TContext>) => boolean) =>
 		registered
+			.filter((cmd) => (include ? include(cmd) : true))
 			.map((cmd) => {
 				const visible = cmd.command.filter((c) => c !== "<default>");
 				if (visible.length === 0) return null;

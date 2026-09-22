@@ -3,9 +3,11 @@ import { fetchUrlToBuffer } from "../_lib/fetch-url.js";
 import { gifToSticker, imageToSticker, isAnimatedSticker, stickerToGifPlayback } from "../_lib/whatsapp/media.js";
 import type { Context } from "../messages/types.js";
 import { resolveTwitterGif, TwitterResolveError } from "../twitter/resolve.js";
+import { isStickerTaggingEnabled } from "../user-settings/index.js";
 import { Sticker, UnsavedSticker } from "./index.js";
 
 const MAX_GIF_BYTES = 8 * 1024 * 1024;
+const TAG_PROMPT = "Use *!tag (ou !t) tag1 tag2 ...* para marcá-la.";
 
 type WithRequired<T, K extends keyof T> = T & { [P in K]-?: T[P] };
 
@@ -24,9 +26,16 @@ export async function saveSticker({
 
 	logger.info({ stickerId: sticker.id }, "Sticker saved");
 
+	const taggingEnabled = await isStickerTaggingEnabled(userId);
+
+	if (!taggingEnabled) {
+		await sendText("Figurinha recebida!");
+		return;
+	}
+
 	const existingTagsMessage = sticker.tags.length > 0 ? `\n\nTags atuais: ${sticker.tags.join(", ")}` : "";
 
-	await sendText(`Figurinha recebida!${existingTagsMessage}\n\nUse *!tag (ou !t) tag1 tag2 ...* para marcá-la.`);
+	await sendText(`Figurinha recebida!${existingTagsMessage}\n\n${TAG_PROMPT}`);
 }
 
 type SaveImageAsStickerParams = WithRequired<Omit<CommandParams<Context>, "args">, "image">;
@@ -47,11 +56,16 @@ export async function saveImageAsSticker({
 
 	logger.info({ stickerId: sticker.id }, "Sticker saved");
 
-	const existingTagsMessage = sticker.tags.length > 0 ? `\n\nTags atuais: ${sticker.tags.join(", ")}` : "";
+	const taggingEnabled = await isStickerTaggingEnabled(userId);
+	const existingTagsMessage =
+		taggingEnabled && sticker.tags.length > 0 ? `\n\nTags atuais: ${sticker.tags.join(", ")}` : "";
 
 	await sendText(`Imagem recebida e convertida para figurinha!${existingTagsMessage}`);
 	await sendSticker(stickerBytes);
-	await sendText(`Use *!tag (ou !t) tag1 tag2 ...* para marcá-la.`);
+
+	if (taggingEnabled) {
+		await sendText(TAG_PROMPT);
+	}
 }
 
 type SaveGifAsStickerParams = WithRequired<
@@ -78,11 +92,16 @@ export async function saveGifAsSticker({
 
 	logger.info({ stickerId: sticker.id }, "Sticker saved");
 
-	const existingTagsMessage = sticker.tags.length > 0 ? `\n\nTags atuais: ${sticker.tags.join(", ")}` : "";
+	const taggingEnabled = await isStickerTaggingEnabled(userId);
+	const existingTagsMessage =
+		taggingEnabled && sticker.tags.length > 0 ? `\n\nTags atuais: ${sticker.tags.join(", ")}` : "";
 
 	await sendText(`GIF convertido para figurinha!${existingTagsMessage}`);
 	await sendSticker(stickerBytes);
-	await sendText(`Use *!tag (ou !t) tag1 tag2 ...* para marcá-la.`);
+
+	if (taggingEnabled) {
+		await sendText(TAG_PROMPT);
+	}
 }
 
 export async function tagSticker({ args, logger, userId, sendText }: CommandParams<Context>): Promise<void> {
@@ -157,7 +176,9 @@ export async function deleteSticker({ userId, logger, sendText }: CommandParams<
 
 	await sticker.delete();
 
-	return await sendText("A figurinha e suas tags foram apagadas.");
+	const taggingEnabled = await isStickerTaggingEnabled(userId);
+
+	return await sendText(taggingEnabled ? "A figurinha e suas tags foram apagadas." : "A figurinha foi apagada.");
 }
 
 export async function sendRawLastSticker({
