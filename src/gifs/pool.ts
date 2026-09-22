@@ -59,10 +59,10 @@ export const gifConversionWorkerPool = {
 	shutdown: async () => {
 		if (!pool) return;
 
-		const p = pool;
+		const activePool = pool;
 
 		pool = null;
 
-		await p.destroy();
+		await activePool.destroy();
 	},
 };

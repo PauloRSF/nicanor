@@ -17,8 +17,11 @@ type ConversionParams = {
 	quality: number;
 	size: number;
 	maxFps?: number;
+	compressionLevel?: number;
+	crThreshold?: number;
 };
 
+/** Stairs down quality/size/fps until under WhatsApp's 500KB limit. */
 const GIF_TO_STICKER_CONVERSION_PARAMS_ATTEMPTS: ConversionParams[] = [
 	{ quality: 82, size: STICKER_SIZE },
 	{ quality: 76, size: STICKER_SIZE },
@@ -28,6 +31,16 @@ const GIF_TO_STICKER_CONVERSION_PARAMS_ATTEMPTS: ConversionParams[] = [
 	{ maxFps: 18, quality: 60, size: 320 },
 	{ maxFps: 15, quality: 50, size: 320 },
 	{ maxFps: 15, quality: 40, size: 256 },
+	{ maxFps: 12, quality: 30, size: 256 },
+	{ maxFps: 12, quality: 25, size: 192 },
+	{ maxFps: 10, quality: 20, size: 192 },
+	{ maxFps: 10, quality: 15, size: 160, compressionLevel: 6 },
+	{ maxFps: 8, quality: 12, size: 128, compressionLevel: 6 },
+	{ maxFps: 8, quality: 10, size: 128, compressionLevel: 6, crThreshold: 40 },
+	{ maxFps: 6, quality: 8, size: 96, compressionLevel: 6, crThreshold: 50 },
+	{ maxFps: 5, quality: 5, size: 96, compressionLevel: 6, crThreshold: 60 },
+	{ maxFps: 4, quality: 3, size: 80, compressionLevel: 6, crThreshold: 80 },
+	{ maxFps: 3, quality: 1, size: 64, compressionLevel: 6, crThreshold: 100 },
 ];
 
 /** https://faq.whatsapp.com/1056840314992666 */
@@ -62,6 +75,8 @@ export async function convertAnimationToSticker(job: ConvertAnimationJob): Promi
 				maxFps: attempt.maxFps,
 				size: attempt.size,
 				quality: attempt.quality,
+				compressionLevel: attempt.compressionLevel,
+				crThreshold: attempt.crThreshold,
 			});
 
 			try {
@@ -72,11 +87,27 @@ export async function convertAnimationToSticker(job: ConvertAnimationJob): Promi
 				const out = await readFile(outputPath);
 
 				if (out.length <= MAX_ANIMATED_STICKER_BYTES) {
-					logger.info({ stickerByteLength: out.length }, "Animated sticker encoded successfully");
+					logger.info(
+						{
+							stickerByteLength: out.length,
+							quality: attempt.quality,
+							size: attempt.size,
+							maxFps: attempt.maxFps,
+						},
+						"Animated sticker encoded successfully",
+					);
 					return out;
 				}
 
-				logger.warn({ stickerByteLength: out.length }, "Animated sticker encoded successfully, but it's too large");
+				logger.warn(
+					{
+						stickerByteLength: out.length,
+						quality: attempt.quality,
+						size: attempt.size,
+						maxFps: attempt.maxFps,
+					},
+					"Animated sticker encoded successfully, but it's too large",
+				);
 			} catch (error) {
 				logger.error(error, "Failed to encode animated sticker (ffmpeg)");
 			}
@@ -89,6 +120,8 @@ export async function convertAnimationToSticker(job: ConvertAnimationJob): Promi
 }
 
 export async function convertAnimatedStickerToGifPlayback(webpBytes: Buffer): Promise<Buffer> {
+	const meta = await sharp(webpBytes, { animated: true }).metadata();
+
 	const gifBytes = await sharp(webpBytes, { animated: true })
 		.ensureAlpha()
 		.flatten({ background: { r: 0, g: 0, b: 0 } })
@@ -102,9 +135,14 @@ export async function convertAnimatedStickerToGifPlayback(webpBytes: Buffer): Pr
 	try {
 		await writeFile(inputPath, gifBytes);
 
-		await execFileAsync(ffmpegPath, getGifToMp4Options({ inputPath, outputPath }), {
-			maxBuffer: 10 * 1024 * 1024,
-		});
+		const delayMs = meta.delay?.[0] ?? 100;
+		const fps = Math.min(30, Math.max(1, Math.round(1000 / delayMs)));
+
+		await execFileAsync(
+			ffmpegPath,
+			getGifToMp4Options({ inputPath, outputPath, fps }),
+			{ maxBuffer: 10 * 1024 * 1024 },
+		);
 
 		return await readFile(outputPath);
 	} finally {

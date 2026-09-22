@@ -13,9 +13,19 @@ type GetAnimatedWebpOptionsParams = {
 	maxFps?: number;
 	quality: number;
 	size: number;
+	compressionLevel?: number;
+	crThreshold?: number;
 };
 
-export function getAnimatedWebpOptions({ inputPath, outputPath, maxFps, quality, size }: GetAnimatedWebpOptionsParams) {
+export function getAnimatedWebpOptions({
+	inputPath,
+	outputPath,
+	maxFps,
+	quality,
+	size,
+	compressionLevel = 4,
+	crThreshold,
+}: GetAnimatedWebpOptionsParams) {
 	// Contain in size×size at maximum scale: factor = min(size/iw, size/ih) (may upscale small sources),
 	// then transparent pad to a square so clients don't stretch non-square frames.
 	const scaleContain = `scale=iw*min(${size}/iw\\,${size}/ih):ih*min(${size}/iw\\,${size}/ih):flags=lanczos+accurate_rnd+full_chroma_int`;
@@ -31,7 +41,7 @@ export function getAnimatedWebpOptions({ inputPath, outputPath, maxFps, quality,
 
 	const filterGraph = filterGraphParts.join(",");
 
-	return [
+	const args = [
 		"-y",
 		"-hide_banner",
 		"-loglevel",
@@ -52,24 +62,33 @@ export function getAnimatedWebpOptions({ inputPath, outputPath, maxFps, quality,
 		"-lossless",
 		"0",
 		"-compression_level",
-		"4",
+		String(compressionLevel),
 		"-quality",
 		String(quality),
-		outputPath,
 	];
+
+	if (crThreshold !== undefined) {
+		args.push("-cr_threshold", String(crThreshold), "-cr_size", "16");
+	}
+
+	args.push(outputPath);
+	return args;
 }
 
 type GetGifToMp4OptionsParams = {
 	inputPath: string;
 	outputPath: string;
+	fps: number;
 };
 
-export function getGifToMp4Options({ inputPath, outputPath }: GetGifToMp4OptionsParams) {
+export function getGifToMp4Options({ inputPath, outputPath, fps }: GetGifToMp4OptionsParams) {
 	return [
 		"-y",
 		"-hide_banner",
 		"-loglevel",
 		"error",
+		"-framerate",
+		String(fps),
 		"-i",
 		inputPath,
 		"-an",
