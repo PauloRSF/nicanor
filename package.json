@@ -10,8 +10,11 @@
     "lint:fix": "biome check --write src/",
     "db:push": "supabase db push",
     "build": "tsc",
-    "start": "node dist/boot.js"
+    "start": "node dist/boot.js",
+    "postinstall": "node scripts/install-yt-dlp.mjs",
+    "yt-dlp:update": "node scripts/install-yt-dlp.mjs --force"
   },
+
   "dependencies": {
     "@supabase/supabase-js": "^2.98.0",
     "baileys": "^7.0.0-rc.9",

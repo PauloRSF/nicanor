@@ -1,12 +1,9 @@
 import type { CommandParams } from "../_lib/command-router.js";
-import { fetchUrlToBuffer } from "../_lib/fetch-url.js";
 import { gifToSticker, imageToSticker, isAnimatedSticker, stickerToGifPlayback } from "../_lib/whatsapp/media.js";
 import type { Context } from "../messages/types.js";
-import { resolveTwitterGif, TwitterResolveError } from "../twitter/resolve.js";
 import { isStickerTaggingEnabled } from "../user-settings/index.js";
 import { Sticker, UnsavedSticker } from "./index.js";
 
-const MAX_GIF_BYTES = 8 * 1024 * 1024;
 const TAG_PROMPT = "Use *!tag (ou !t) tag1 tag2 ...* para marcá-la.";
 
 type WithRequired<T, K extends keyof T> = T & { [P in K]-?: T[P] };
@@ -81,7 +78,7 @@ export async function saveGifAsSticker({
 	sendText,
 	sendSticker,
 }: SaveGifAsStickerParams): Promise<void> {
-	await sendText("GIF recebido, vou converter para figurinha... Isso pode levar alguns segundos.");
+	await sendText("Mídia recebida, vou converter para figurinha... Isso pode levar alguns segundos.");
 
 	const stickerBytes = await gifToSticker(userId, gif, gifInputExt);
 
@@ -96,7 +93,7 @@ export async function saveGifAsSticker({
 	const existingTagsMessage =
 		taggingEnabled && sticker.tags.length > 0 ? `\n\nTags atuais: ${sticker.tags.join(", ")}` : "";
 
-	await sendText(`GIF convertido para figurinha!${existingTagsMessage}`);
+	await sendText(`Mídia convertida para figurinha!${existingTagsMessage}`);
 	await sendSticker(stickerBytes);
 
 	if (taggingEnabled) {
@@ -220,44 +217,5 @@ export async function sendRawLastSticker({
 		logger.info({ stickerId: sticker.id, stickerByteLength: bytes.length }, "Sending raw sticker image");
 
 		await sendImage(bytes);
-	}
-}
-
-export async function importTwitterGif({
-	args,
-	userId,
-	logger,
-	sendText,
-	sendSticker,
-	sendImage,
-	sendGif,
-}: CommandParams<Context>): Promise<void> {
-	const url = args[0];
-
-	if (!url) {
-		return await sendText("Informe o link do X/Twitter. Ex: *!x https://x.com/.../status/...*");
-	}
-
-	try {
-		const { mp4Url } = await resolveTwitterGif(url);
-		const gifBytes = await fetchUrlToBuffer(mp4Url, MAX_GIF_BYTES);
-
-		await saveGifAsSticker({
-			userId,
-			logger,
-			gif: gifBytes,
-			gifInputExt: "mp4",
-			sendText,
-			sendSticker,
-			sendImage,
-			sendGif,
-		});
-	} catch (error) {
-		if (error instanceof TwitterResolveError) {
-			return await sendText(error.userMessage);
-		}
-
-		logger.error(error, "Failed to import Twitter GIF");
-		await sendText("Não consegui converter este GIF para figurinha.");
 	}
 }

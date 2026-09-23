@@ -3,9 +3,9 @@ import type { WASocket } from "baileys";
 import { type CommandParams, CommandRouter } from "../_lib/command-router.js";
 import { logger } from "../_lib/logger.js";
 import { createWhatsAppClient } from "../_lib/whatsapp/client.js";
+import { downloadSocialVideoCommand, socialVideoToSticker } from "../social/commands.js";
 import {
 	deleteSticker,
-	importTwitterGif,
 	saveGifAsSticker,
 	saveImageAsSticker,
 	saveSticker,
@@ -44,6 +44,11 @@ function buildContext(socket: WASocket, jid: string) {
 			enrichedLogger.info({ gifByteLength: bytes.length }, "Sending gif playback");
 
 			await socket.sendMessage(jid, { video: bytes, gifPlayback: true });
+		},
+		sendVideo: async (bytes: Buffer) => {
+			enrichedLogger.info({ videoByteLength: bytes.length }, "Sending video");
+
+			await socket.sendMessage(jid, { video: bytes, mimetype: "video/mp4" });
 		},
 	};
 }
@@ -144,9 +149,15 @@ export async function init(): Promise<void> {
 	});
 
 	commandRouter.command({
-		command: ["!x", "!twitter"],
-		help: "Converte um GIF do X/Twitter em figurinha (informe o link)",
-		handler: importTwitterGif,
+		command: ["!baixar", "!b"],
+		help: "Baixa um vídeo do X/Twitter, TikTok ou Instagram (informe o link)",
+		handler: downloadSocialVideoCommand,
+	});
+
+	commandRouter.command({
+		command: ["!figurinha", "!f", "!x", "!twitter"],
+		help: "Converte um vídeo do X/Twitter, TikTok ou Instagram em figurinha (informe o link)",
+		handler: socialVideoToSticker,
 	});
 
 	client.onTextMessage(async ({ jid, socket, text }) => {
