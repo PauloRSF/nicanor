@@ -1,9 +1,10 @@
-import type { WASocket } from "baileys";
+import type { WAMessage, WASocket } from "baileys";
 
 import { type CommandParams, CommandRouter } from "../_lib/command-router.js";
 import { logger } from "../_lib/logger.js";
 import { createWhatsAppClient } from "../_lib/whatsapp/client.js";
 import { downloadSocialMediaCommand, socialMediaToSticker } from "../social/commands.js";
+import { extractSocialUrl } from "../social/detect.js";
 import {
 	deleteSticker,
 	saveGifAsSticker,
@@ -20,36 +21,38 @@ import type { Context } from "./types.js";
 const TAGGING_DISABLED_REPLY = "A marcação de tags está desativada. Use *!habilitartags* para ativá-la.";
 const TAGGING_COMMANDS = new Set(["!tag", "!t", "!search", "!s"]);
 
-function buildContext(socket: WASocket, jid: string) {
+function buildContext(socket: WASocket, jid: string, isGroup: boolean, sourceMessage: WAMessage): Context {
 	const enrichedLogger = logger.child({ jid });
+	const sendOptions = isGroup ? { quoted: sourceMessage } : undefined;
 
 	return {
 		userId: jid,
 		logger: enrichedLogger,
+		isGroup,
 		sendText: async (text: string) => {
-			enrichedLogger.info({ text }, "Sending text");
+			enrichedLogger.info({ text, isGroup }, "Sending text");
 
-			await socket.sendMessage(jid, { text });
+			await socket.sendMessage(jid, { text }, sendOptions);
 		},
 		sendSticker: async (bytes: Buffer) => {
-			enrichedLogger.info({ stickerByteLength: bytes.length }, "Sending sticker");
+			enrichedLogger.info({ stickerByteLength: bytes.length, isGroup }, "Sending sticker");
 
-			await socket.sendMessage(jid, { sticker: bytes });
+			await socket.sendMessage(jid, { sticker: bytes }, sendOptions);
 		},
 		sendImage: async (bytes: Buffer) => {
-			enrichedLogger.info({ imageByteLength: bytes.length }, "Sending image");
+			enrichedLogger.info({ imageByteLength: bytes.length, isGroup }, "Sending image");
 
-			await socket.sendMessage(jid, { image: bytes });
+			await socket.sendMessage(jid, { image: bytes }, sendOptions);
 		},
 		sendGif: async (bytes: Buffer) => {
-			enrichedLogger.info({ gifByteLength: bytes.length }, "Sending gif playback");
+			enrichedLogger.info({ gifByteLength: bytes.length, isGroup }, "Sending gif playback");
 
-			await socket.sendMessage(jid, { video: bytes, gifPlayback: true });
+			await socket.sendMessage(jid, { video: bytes, gifPlayback: true }, sendOptions);
 		},
 		sendVideo: async (bytes: Buffer) => {
-			enrichedLogger.info({ videoByteLength: bytes.length }, "Sending video");
+			enrichedLogger.info({ videoByteLength: bytes.length, isGroup }, "Sending video");
 
-			await socket.sendMessage(jid, { video: bytes, mimetype: "video/mp4" });
+			await socket.sendMessage(jid, { video: bytes, mimetype: "video/mp4" }, sendOptions);
 		},
 	};
 }
@@ -76,6 +79,10 @@ async function toggleTaggingCommand({ userId, sendText }: CommandParams<Context>
 	return await sendText("Marcação de tags desativada.");
 }
 
+function startsWithCommand(text: string): boolean {
+	return text.trimStart().startsWith("!");
+}
+
 let shutdownFn: (() => void) | null = null;
 
 export function shutdown(): void {
@@ -95,7 +102,9 @@ export async function init(): Promise<void> {
 		command: ["<default>"],
 		help: "Mostra esta mensagem",
 		handler: ({ sendText }) =>
-			sendText("Não entendi... 🤔\n\nUse *!help* (ou *!h*) para ver a lista de comandos possíveis."),
+			sendText(
+				"Envie somente mídias (imagens, vídeos ou GIFs) para que eu transforme em figurinha.\n\nEnvie *!h* para ver a lista dos comandos que eu posso executar.",
+			),
 	});
 
 	commandRouter.command({
@@ -103,9 +112,8 @@ export async function init(): Promise<void> {
 		help: "Mostra esta mensagem",
 		handler: async ({ userId, sendText }) => {
 			const taggingEnabled = await isStickerTaggingEnabled(userId);
-			const intro = taggingEnabled
-				? "Oi, eu sou o Nicanor 🤖!\n\nVocê pode me enviar figurinhas, GIFs (reprodução no WhatsApp ou arquivo .gif), ou imagens para marcá-las com tags.\n\nMeus comandos são:\n\n"
-				: "Oi, eu sou o Nicanor 🤖!\n\nVocê pode me enviar figurinhas, GIFs (reprodução no WhatsApp ou arquivo .gif), ou imagens.\n\nMeus comandos são:\n\n";
+			const intro =
+				"Oi, eu sou o Nicanor 🤖!\n\nVocê pode me enviar images, vídeos ou GIFs e eu vou transformá-los em figurinha. Em grupos, você pode me marcar (@) em mensagem com mídias.\n\nMeus comandos são:\n\n";
 
 			const help = commandRouter.helpText((cmd) => {
 				if (!taggingEnabled && cmd.command.some((alias) => TAGGING_COMMANDS.has(alias))) {
@@ -117,6 +125,24 @@ export async function init(): Promise<void> {
 
 			await sendText(`${intro}${help}`);
 		},
+	});
+
+	commandRouter.command({
+		command: ["!figurinha", "!f", "!x", "!twitter"],
+		help: "Converte uma mídia do X/Twitter, TikTok ou Instagram em figurinha (informe o link)",
+		handler: socialMediaToSticker,
+	});
+
+	commandRouter.command({
+		command: ["!baixar", "!b"],
+		help: "Baixa uma mídia do X/Twitter, TikTok ou Instagram (informe o link)",
+		handler: downloadSocialMediaCommand,
+	});
+
+	commandRouter.command({
+		command: ["!raw", "!r"],
+		help: "Envia o arquivo da última figurinha",
+		handler: sendRawLastSticker,
 	});
 
 	commandRouter.command({
@@ -143,38 +169,37 @@ export async function init(): Promise<void> {
 		handler: deleteSticker,
 	});
 
-	commandRouter.command({
-		command: ["!raw", "!r"],
-		help: "Envia o arquivo da última figurinha",
-		handler: sendRawLastSticker,
-	});
+	client.onTextMessage(async ({ jid, socket, text, isGroup, sourceMessage }) => {
+		const context = buildContext(socket, jid, isGroup, sourceMessage);
 
-	commandRouter.command({
-		command: ["!baixar", "!b"],
-		help: "Baixa um vídeo do X/Twitter, TikTok ou Instagram (informe o link)",
-		handler: downloadSocialVideoCommand,
-	});
-
-	commandRouter.command({
-		command: ["!figurinha", "!f", "!x", "!twitter"],
-		help: "Converte um vídeo do X/Twitter, TikTok ou Instagram em figurinha (informe o link)",
-		handler: socialVideoToSticker,
-	});
-
-	client.onTextMessage(async ({ jid, socket, text }) => {
-		const context = buildContext(socket, jid);
-
-		context.logger.child({ class: "message-events" }).info({ text }, "Received text message");
+		context.logger.child({ class: "message-events" }).info({ text, isGroup }, "Received text message");
 
 		try {
+			if (!startsWithCommand(text)) {
+				const socialUrl = extractSocialUrl(text);
+
+				if (socialUrl) {
+					await socialMediaToSticker({ ...context, args: [socialUrl] });
+					return;
+				}
+			}
+
+			// Commands (and the default help reply) are DM-only.
+			if (isGroup) {
+				return;
+			}
+
 			await commandRouter.handle(context, text);
 		} catch (error) {
 			logger.error(error, "Error processing text message");
+			if (isGroup) {
+				await context.sendText("Não consegui processar essa mensagem.");
+			}
 		}
 	});
 
-	client.onStickerMessage(async ({ jid, socket, stickerBytes }) => {
-		const context = buildContext(socket, jid);
+	client.onStickerMessage(async ({ jid, socket, stickerBytes, isGroup, sourceMessage }) => {
+		const context = buildContext(socket, jid, isGroup, sourceMessage);
 
 		context.logger
 			.child({ class: "message-events" })
@@ -187,27 +212,30 @@ export async function init(): Promise<void> {
 		}
 	});
 
-	client.onImageMessage(async ({ jid, socket, imageBytes }) => {
-		const context = buildContext(socket, jid);
+	client.onImageMessage(async ({ jid, socket, imageBytes, isGroup, sourceMessage }) => {
+		const context = buildContext(socket, jid, isGroup, sourceMessage);
 
 		context.logger
 			.child({ class: "message-events" })
-			.info({ imageByteLength: imageBytes.length }, "Received image message");
+			.info({ imageByteLength: imageBytes.length, isGroup }, "Received image message");
 
 		try {
 			await saveImageAsSticker({ ...context, image: imageBytes });
 		} catch (error) {
 			logger.error(error, "Error processing image message");
+			if (isGroup) {
+				await context.sendText("Não consegui converter esta imagem para figurinha.");
+			}
 		}
 	});
 
-	client.onGifMessage(async ({ jid, socket, gifBytes, gifInputExt }) => {
-		const context = buildContext(socket, jid);
+	client.onGifMessage(async ({ jid, socket, gifBytes, gifInputExt, isGroup, sourceMessage }) => {
+		const context = buildContext(socket, jid, isGroup, sourceMessage);
 
 		context.logger
 			.child({ class: "message-events" })
 			.info(
-				{ gifByteLength: gifBytes.length, gifInputExt },
+				{ gifByteLength: gifBytes.length, gifInputExt, isGroup },
 				gifInputExt === "gif" ? "Received gif document message" : "Received gif playback message",
 			);
 
@@ -219,12 +247,12 @@ export async function init(): Promise<void> {
 		}
 	});
 
-	client.onVideoMessage(async ({ jid, socket, videoBytes }) => {
-		const context = buildContext(socket, jid);
+	client.onVideoMessage(async ({ jid, socket, videoBytes, isGroup, sourceMessage }) => {
+		const context = buildContext(socket, jid, isGroup, sourceMessage);
 
 		context.logger
 			.child({ class: "message-events" })
-			.info({ videoByteLength: videoBytes.length }, "Received video message");
+			.info({ videoByteLength: videoBytes.length, isGroup }, "Received video message");
 
 		try {
 			await saveVideoToSticker({ ...context, video: videoBytes });

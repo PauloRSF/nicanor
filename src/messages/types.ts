@@ -3,6 +3,7 @@ import type { Logger } from "../_lib/logger.js";
 export type Context = {
 	userId: string;
 	logger: Logger;
+	isGroup: boolean;
 	sticker?: Buffer;
 	image?: Buffer;
 	gif?: Buffer;

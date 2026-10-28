@@ -70,6 +70,7 @@ export async function downloadSocialMediaCommand({
 	sendText,
 	sendVideo,
 	sendImage,
+	isGroup,
 }: CommandParams<Context>): Promise<void> {
 	const url = args[0];
 
@@ -77,7 +78,9 @@ export async function downloadSocialMediaCommand({
 		return await sendText("Informe o link da mídia. Ex: *!baixar https://www.tiktok.com/...*");
 	}
 
-	await sendText("Baixando a mídia... Isso pode levar alguns segundos.");
+	if (isGroup) {
+		await sendText("Baixando a mídia... Isso pode levar alguns segundos.");
+	}
 
 	try {
 		const { bytes, platform, source, mediaType } = await downloadSocialMedia(url, logger);
@@ -98,16 +101,8 @@ export async function downloadSocialMediaCommand({
 	}
 }
 
-export async function socialMediaToSticker({
-	args,
-	userId,
-	logger,
-	sendText,
-	sendSticker,
-	sendImage,
-	sendGif,
-	sendVideo,
-}: CommandParams<Context>): Promise<void> {
+export async function socialMediaToSticker(context: CommandParams<Context>): Promise<void> {
+	const { args, logger, sendText } = context;
 	const url = args[0];
 
 	if (!url) {
@@ -119,30 +114,11 @@ export async function socialMediaToSticker({
 		logger.info({ platform, source, mediaType, byteLength: bytes.length }, "Converting social media to sticker");
 
 		if (mediaType === "image") {
-			await saveImageAsSticker({
-				userId,
-				logger,
-				image: bytes,
-				sendText,
-				sendSticker,
-				sendImage,
-				sendGif,
-				sendVideo,
-			});
+			await saveImageAsSticker({ ...context, image: bytes });
 			return;
 		}
 
-		await saveGifAsSticker({
-			userId,
-			logger,
-			gif: bytes,
-			gifInputExt: "mp4",
-			sendText,
-			sendSticker,
-			sendImage,
-			sendGif,
-			sendVideo,
-		});
+		await saveGifAsSticker({ ...context, gif: bytes, gifInputExt: "mp4" });
 	} catch (error) {
 		if (error instanceof SocialDownloadError) {
 			return await sendText(socialDownloadUserMessage(error));

@@ -1,6 +1,7 @@
 import {
 	DisconnectReason,
 	downloadContentFromMessage,
+	extractMessageContent,
 	fetchLatestBaileysVersion,
 	makeCacheableSignalKeyStore,
 	makeWASocket,
@@ -17,6 +18,8 @@ import { logger } from "../logger.js";
 export type MessageContext = {
 	jid: string;
 	socket: WASocket;
+	isGroup: boolean;
+	sourceMessage: WAMessage;
 };
 
 type TextMessageEvent = MessageContext & { text: string };
@@ -50,6 +53,45 @@ const MAX_MEDIA_SIZE_BYTES = {
 	document: 8 * 1024 * 1024,
 };
 
+function isGroupJid(jid: string): boolean {
+	return jid.endsWith("@g.us");
+}
+
+function normalizeJid(jid: string): string {
+	const at = jid.indexOf("@");
+	if (at < 0) return jid;
+
+	const user = jid.slice(0, at);
+	const server = jid.slice(at + 1);
+	return `${user.split(":")[0]}@${server}`;
+}
+
+function botIdCandidates(socket: WASocket): string[] {
+	const me = socket.user;
+
+	if (!me) return [];
+
+	return [me.id, me.lid, me.phoneNumber].filter((value): value is string => Boolean(value)).map(normalizeJid);
+}
+
+function isBotMentioned(socket: WASocket, mentionedJid?: string[] | null): boolean {
+	if (!mentionedJid?.length) return false;
+
+	const mine = new Set(botIdCandidates(socket));
+
+	return mentionedJid.some((jid) => mine.has(normalizeJid(jid)));
+}
+
+function getMessageContextInfo(message: proto.IMessage): proto.IContextInfo | undefined | null {
+	return (
+		message.extendedTextMessage?.contextInfo ??
+		message.imageMessage?.contextInfo ??
+		message.videoMessage?.contextInfo ??
+		message.documentMessage?.contextInfo ??
+		message.stickerMessage?.contextInfo
+	);
+}
+
 function isGifDocumentFile(doc: proto.Message.IDocumentMessage): boolean {
 	const mime = doc.mimetype?.toLowerCase() ?? "";
 	if (mime === "image/gif" || mime.startsWith("image/gif;")) return true;
@@ -63,7 +105,7 @@ async function downloadMediaToBuffer(
 		| proto.Message.IImageMessage
 		| proto.Message.IVideoMessage
 		| proto.Message.IDocumentMessage,
-	type: "sticker" | "image" | "gif" | "document",
+	type: "sticker" | "image" | "gif" | "video" | "document",
 ): Promise<Buffer> {
 	const stream = await downloadContentFromMessage(message, type);
 
@@ -80,6 +122,45 @@ async function downloadMediaToBuffer(
 	}
 
 	return Buffer.concat(chunks);
+}
+
+type DownloadedMedia =
+	| { kind: "image"; imageBytes: Buffer }
+	| { kind: "gif"; gifBytes: Buffer; gifInputExt: "mp4" | "gif" }
+	| { kind: "video"; videoBytes: Buffer };
+
+async function downloadMessageMedia(raw: proto.IMessage): Promise<DownloadedMedia | null> {
+	const message = extractMessageContent(raw) ?? raw;
+
+	if (message.imageMessage) {
+		return { kind: "image", imageBytes: await downloadMediaToBuffer(message.imageMessage, "image") };
+	}
+
+	if (message.videoMessage?.gifPlayback === true) {
+		return {
+			kind: "gif",
+			gifBytes: await downloadMediaToBuffer(message.videoMessage, "gif"),
+			gifInputExt: "mp4",
+		};
+	}
+
+	if (message.videoMessage) {
+		return { kind: "video", videoBytes: await downloadMediaToBuffer(message.videoMessage, "video") };
+	}
+
+	if (message.documentMessage && isGifDocumentFile(message.documentMessage)) {
+		return {
+			kind: "gif",
+			gifBytes: await downloadMediaToBuffer(message.documentMessage, "document"),
+			gifInputExt: "gif",
+		};
+	}
+
+	return null;
+}
+
+function startsWithCommand(text: string): boolean {
+	return text.trimStart().startsWith("!");
 }
 
 type CreateWhatsAppClientOptions = {
@@ -136,15 +217,18 @@ export async function createWhatsAppClient({
 		return key.remoteJid ?? null;
 	}
 
-	function hasDispatchablePayload(message: proto.IMessage): boolean {
+	function hasDispatchablePayload(raw: proto.IMessage): boolean {
+		const message = extractMessageContent(raw) ?? raw;
 		const text = message.conversation ?? message.extendedTextMessage?.text;
+		const caption = message.imageMessage?.caption ?? message.videoMessage?.caption ?? message.documentMessage?.caption;
 
 		return (
 			!!message.stickerMessage ||
 			!!message.imageMessage ||
-			message.videoMessage?.gifPlayback === true ||
+			!!message.videoMessage ||
 			(!!message.documentMessage && isGifDocumentFile(message.documentMessage)) ||
-			!!text
+			!!text ||
+			!!caption
 		);
 	}
 
@@ -157,35 +241,74 @@ export async function createWhatsAppClient({
 
 			if (!jid) return;
 
-			const { message } = msg;
-			if (!message) return;
+			if (!msg.message) return;
 
-			const base: MessageContext = { jid, socket };
+			const message = extractMessageContent(msg.message) ?? msg.message;
+			const contextInfo = getMessageContextInfo(message);
+			const isGroup = isGroupJid(jid);
+			const mentionedBot = isBotMentioned(socket, contextInfo?.mentionedJid);
+
+			// Stickers stay DM-only. Everything else: DMs always, groups only when @mentioned.
+			if (message.stickerMessage) {
+				if (isGroup) return;
+			} else if (isGroup && !mentionedBot) {
+				return;
+			}
+
+			const base: MessageContext = { jid, socket, isGroup, sourceMessage: msg };
 			const text = message.conversation ?? message.extendedTextMessage?.text;
 
 			if (message.stickerMessage) {
 				const stickerBytes = await downloadMediaToBuffer(message.stickerMessage, "sticker");
 
 				await Promise.resolve(onSticker?.({ ...base, stickerBytes }));
-			} else if (message.imageMessage) {
-				const imageBytes = await downloadMediaToBuffer(message.imageMessage, "image");
-
-				await Promise.resolve(onImage?.({ ...base, imageBytes }));
-			} else if (message.videoMessage?.gifPlayback === true) {
-				const gifBytes = await downloadMediaToBuffer(message.videoMessage, "gif");
-
-				await Promise.resolve(onGif?.({ ...base, gifBytes, gifInputExt: "mp4" }));
-			} else if (message.videoMessage) {
-				const videoBytes = await downloadMediaToBuffer(message.videoMessage, "video");
-
-				await Promise.resolve(onVideo?.({ ...base, videoBytes }));
-			} else if (message.documentMessage && isGifDocumentFile(message.documentMessage)) {
-				const gifBytes = await downloadMediaToBuffer(message.documentMessage, "document");
-
-				await Promise.resolve(onGif?.({ ...base, gifBytes, gifInputExt: "gif" }));
-			} else if (text) {
-				await Promise.resolve(onText?.({ jid, socket, text }));
+				return;
 			}
+
+			async function dispatchMedia(media: DownloadedMedia): Promise<void> {
+				if (media.kind === "image") {
+					await Promise.resolve(onImage?.({ ...base, imageBytes: media.imageBytes }));
+					return;
+				}
+
+				if (media.kind === "gif") {
+					await Promise.resolve(onGif?.({ ...base, gifBytes: media.gifBytes, gifInputExt: media.gifInputExt }));
+					return;
+				}
+
+				await Promise.resolve(onVideo?.({ ...base, videoBytes: media.videoBytes }));
+			}
+
+			const directMedia = await downloadMessageMedia(message);
+
+			if (directMedia) {
+				await dispatchMedia(directMedia);
+				return;
+			}
+
+			if (!text) return;
+
+			// Reply-to-media: treat quoted media like a normal media message. In DMs, !commands
+			// still win; in groups commands are disabled so quoted media always wins.
+			if (contextInfo?.quotedMessage && (isGroup || !startsWithCommand(text))) {
+				try {
+					const quotedMedia = await downloadMessageMedia(contextInfo.quotedMessage);
+
+					if (quotedMedia) {
+						await dispatchMedia(quotedMedia);
+						return;
+					}
+				} catch (err) {
+					logger.warn(err, "Failed to download quoted media");
+				}
+			}
+
+			// Groups: no !commands (text handler also enforces this).
+			if (isGroup && startsWithCommand(text)) {
+				return;
+			}
+
+			await Promise.resolve(onText?.({ ...base, text }));
 		} catch (err) {
 			logger.error(err, "Error processing incoming message");
 		}

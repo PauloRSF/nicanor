@@ -15,6 +15,8 @@ export async function saveSticker({
 	logger,
 	sticker: stickerBytes,
 	sendText,
+	sendImage,
+	sendGif,
 }: SaveStickerParams): Promise<void> {
 	const sticker = await new UnsavedSticker({
 		userId,
@@ -26,7 +28,15 @@ export async function saveSticker({
 	const taggingEnabled = await isStickerTaggingEnabled(userId);
 
 	if (!taggingEnabled) {
-		await sendText("Figurinha recebida!");
+		// Same as !raw: return the original media file instead of a tagging prompt.
+		await sendRawStickerBytes({
+			logger,
+			stickerId: sticker.id,
+			bytes: stickerBytes,
+			sendText,
+			sendImage,
+			sendGif,
+		});
 		return;
 	}
 
@@ -40,6 +50,7 @@ type SaveImageAsStickerParams = WithRequired<Omit<CommandParams<Context>, "args"
 export async function saveImageAsSticker({
 	userId,
 	logger,
+	isGroup,
 	image: imageBytes,
 	sendText,
 	sendSticker,
@@ -51,13 +62,17 @@ export async function saveImageAsSticker({
 		data: stickerBytes,
 	}).save();
 
-	logger.info({ stickerId: sticker.id }, "Sticker saved");
+	logger.info({ stickerId: sticker.id, isGroup }, "Sticker saved");
 
-	const taggingEnabled = await isStickerTaggingEnabled(userId);
-	const existingTagsMessage =
-		taggingEnabled && sticker.tags.length > 0 ? `\n\nTags atuais: ${sticker.tags.join(", ")}` : "";
+	const taggingEnabled = !isGroup && (await isStickerTaggingEnabled(userId));
 
-	await sendText(`Imagem recebida e convertida para figurinha!${existingTagsMessage}`);
+	if (!isGroup) {
+		const existingTagsMessage =
+			taggingEnabled && sticker.tags.length > 0 ? `\n\nTags atuais: ${sticker.tags.join(", ")}` : "";
+
+		await sendText(`Imagem recebida e convertida para figurinha!${existingTagsMessage}`);
+	}
+
 	await sendSticker(stickerBytes);
 
 	if (taggingEnabled) {
@@ -73,12 +88,15 @@ type SaveGifAsStickerParams = WithRequired<
 export async function saveGifAsSticker({
 	userId,
 	logger,
+	isGroup,
 	gif,
 	gifInputExt = "mp4",
 	sendText,
 	sendSticker,
 }: SaveGifAsStickerParams): Promise<void> {
-	await sendText("Mídia recebida, vou converter para figurinha... Isso pode levar alguns segundos.");
+	if (!isGroup) {
+		await sendText("Mídia recebida, vou converter para figurinha... Isso pode levar alguns segundos.");
+	}
 
 	const stickerBytes = await gifToSticker(userId, gif, gifInputExt);
 
@@ -87,13 +105,17 @@ export async function saveGifAsSticker({
 		data: stickerBytes,
 	}).save();
 
-	logger.info({ stickerId: sticker.id }, "Sticker saved");
+	logger.info({ stickerId: sticker.id, isGroup }, "Sticker saved");
 
-	const taggingEnabled = await isStickerTaggingEnabled(userId);
-	const existingTagsMessage =
-		taggingEnabled && sticker.tags.length > 0 ? `\n\nTags atuais: ${sticker.tags.join(", ")}` : "";
+	const taggingEnabled = !isGroup && (await isStickerTaggingEnabled(userId));
 
-	await sendText(`Mídia convertida para figurinha!${existingTagsMessage}`);
+	if (!isGroup) {
+		const existingTagsMessage =
+			taggingEnabled && sticker.tags.length > 0 ? `\n\nTags atuais: ${sticker.tags.join(", ")}` : "";
+
+		await sendText(`Mídia convertida para figurinha!${existingTagsMessage}`);
+	}
+
 	await sendSticker(stickerBytes);
 
 	if (taggingEnabled) {
@@ -178,6 +200,42 @@ export async function deleteSticker({ userId, logger, sendText }: CommandParams<
 	return await sendText(taggingEnabled ? "A figurinha e suas tags foram apagadas." : "A figurinha foi apagada.");
 }
 
+type SendRawStickerBytesParams = Pick<CommandParams<Context>, "logger" | "sendText" | "sendImage" | "sendGif"> & {
+	stickerId: number;
+	bytes: Buffer;
+};
+
+async function sendRawStickerBytes({
+	logger,
+	stickerId,
+	bytes,
+	sendText,
+	sendImage,
+	sendGif,
+}: SendRawStickerBytesParams): Promise<void> {
+	await sendText("Enviando arquivo da figurinha...");
+
+	if (bytes.length === 0) {
+		return await sendText("Arquivo da figurinha não encontrado.");
+	}
+
+	if (await isAnimatedSticker(bytes)) {
+		logger.info({ stickerId, stickerByteLength: bytes.length }, "Sending raw animated sticker as gif");
+
+		try {
+			const gifBytes = await stickerToGifPlayback(bytes);
+			await sendGif(gifBytes);
+		} catch (error) {
+			logger.error(error, "Failed to convert or send animated sticker as gif playback");
+			return await sendText("Não consegui enviar esta figurinha animada como GIF.");
+		}
+	} else {
+		logger.info({ stickerId, stickerByteLength: bytes.length }, "Sending raw sticker image");
+
+		await sendImage(bytes);
+	}
+}
+
 export async function sendRawLastSticker({
 	userId,
 	logger,
@@ -185,8 +243,6 @@ export async function sendRawLastSticker({
 	sendImage,
 	sendGif,
 }: CommandParams<Context>): Promise<void> {
-	await sendText("Enviando arquivo da figurinha...");
-
 	const sticker = await Sticker.getLastByUserId(userId);
 
 	if (!sticker) {
@@ -199,25 +255,14 @@ export async function sendRawLastSticker({
 
 	const bytes = await sticker.getFile();
 
-	if (bytes.length === 0) {
-		return await sendText("Arquivo da figurinha não encontrado.");
-	}
-
-	if (await isAnimatedSticker(bytes)) {
-		logger.info({ stickerId: sticker.id, stickerByteLength: bytes.length }, "Sending raw animated sticker as gif");
-
-		try {
-			const gifBytes = await stickerToGifPlayback(bytes);
-			await sendGif(gifBytes);
-		} catch (error) {
-			logger.error(error, "Failed to convert or send animated sticker as gif playback");
-			return await sendText("Não consegui enviar esta figurinha animada como GIF.");
-		}
-	} else {
-		logger.info({ stickerId: sticker.id, stickerByteLength: bytes.length }, "Sending raw sticker image");
-
-		await sendImage(bytes);
-	}
+	await sendRawStickerBytes({
+		logger,
+		stickerId: sticker.id,
+		bytes,
+		sendText,
+		sendImage,
+		sendGif,
+	});
 }
 
 type SaveVideoToStickerParams = WithRequired<Omit<CommandParams<Context>, "args">, "video">;
