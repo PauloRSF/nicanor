@@ -3,12 +3,13 @@ import type { WASocket } from "baileys";
 import { type CommandParams, CommandRouter } from "../_lib/command-router.js";
 import { logger } from "../_lib/logger.js";
 import { createWhatsAppClient } from "../_lib/whatsapp/client.js";
-import { downloadSocialVideoCommand, socialVideoToSticker } from "../social/commands.js";
+import { downloadSocialMediaCommand, socialMediaToSticker } from "../social/commands.js";
 import {
 	deleteSticker,
 	saveGifAsSticker,
 	saveImageAsSticker,
 	saveSticker,
+	saveVideoToSticker,
 	searchStickers,
 	sendRawLastSticker,
 	tagSticker,
@@ -215,6 +216,21 @@ export async function init(): Promise<void> {
 		} catch (error) {
 			logger.error(error, "Error processing gif message");
 			await context.sendText("Não consegui converter este GIF para figurinha.");
+		}
+	});
+
+	client.onVideoMessage(async ({ jid, socket, videoBytes }) => {
+		const context = buildContext(socket, jid);
+
+		context.logger
+			.child({ class: "message-events" })
+			.info({ videoByteLength: videoBytes.length }, "Received video message");
+
+		try {
+			await saveVideoToSticker({ ...context, video: videoBytes });
+		} catch (error) {
+			logger.error(error, "Error processing video message");
+			await context.sendText("Não consegui converter este vídeo para figurinha.");
 		}
 	});
 }

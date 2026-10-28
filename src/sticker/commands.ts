@@ -219,3 +219,21 @@ export async function sendRawLastSticker({
 		await sendImage(bytes);
 	}
 }
+
+type SaveVideoToStickerParams = WithRequired<Omit<CommandParams<Context>, "args">, "video">;
+
+const ONE_MB_IN_BYTES = 1024 * 1024;
+
+export async function saveVideoToSticker(context: SaveVideoToStickerParams): Promise<void> {
+	const { logger, video: videoBytes, sendText } = context;
+
+	if (videoBytes.length > 0 && videoBytes.length <= ONE_MB_IN_BYTES * 5) {
+		logger.warn({ videoByteLength: videoBytes.length }, "Video too large for animated sticker conversion");
+
+		await sendText("Esse vídeo é grande demais para virar figurinha animada (máximo de 5MB).");
+
+		return;
+	}
+
+	await saveGifAsSticker({ ...context, gif: videoBytes, gifInputExt: "mp4" });
+}

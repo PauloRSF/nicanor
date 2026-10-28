@@ -14,7 +14,11 @@ import qrcode from "qrcode-terminal";
 
 import { logger } from "../logger.js";
 
-type MessageContext = { jid: string; socket: WASocket };
+export type MessageContext = {
+	jid: string;
+	socket: WASocket;
+};
+
 type TextMessageEvent = MessageContext & { text: string };
 type StickerMessageEvent = MessageContext & { stickerBytes: Buffer };
 type ImageMessageEvent = MessageContext & { imageBytes: Buffer };
@@ -22,6 +26,7 @@ type GifMessageEvent = MessageContext & {
 	gifBytes: Buffer;
 	gifInputExt: "mp4" | "gif";
 };
+type VideoMessageEvent = MessageContext & { videoBytes: Buffer };
 
 type MessageEventHandler<T> = (event: T) => void | Promise<void>;
 
@@ -30,6 +35,7 @@ export type WhatsAppClient = {
 	onStickerMessage: (cb: MessageEventHandler<StickerMessageEvent>) => void;
 	onImageMessage: (cb: MessageEventHandler<ImageMessageEvent>) => void;
 	onGifMessage: (cb: MessageEventHandler<GifMessageEvent>) => void;
+	onVideoMessage: (cb: MessageEventHandler<VideoMessageEvent>) => void;
 	shutdown: () => void;
 };
 
@@ -40,6 +46,7 @@ const MAX_MEDIA_SIZE_BYTES = {
 	sticker: 2 * 1024 * 1024,
 	image: 4 * 1024 * 1024,
 	gif: 8 * 1024 * 1024,
+	video: 16 * 1024 * 1024,
 	document: 8 * 1024 * 1024,
 };
 
@@ -97,6 +104,7 @@ export async function createWhatsAppClient({
 	let onSticker: MessageEventHandler<StickerMessageEvent> | null = null;
 	let onImage: MessageEventHandler<ImageMessageEvent> | null = null;
 	let onGif: MessageEventHandler<GifMessageEvent> | null = null;
+	let onVideo: MessageEventHandler<VideoMessageEvent> | null = null;
 
 	let connectedAt = 0;
 
@@ -152,24 +160,29 @@ export async function createWhatsAppClient({
 			const { message } = msg;
 			if (!message) return;
 
+			const base: MessageContext = { jid, socket };
 			const text = message.conversation ?? message.extendedTextMessage?.text;
 
 			if (message.stickerMessage) {
 				const stickerBytes = await downloadMediaToBuffer(message.stickerMessage, "sticker");
 
-				await Promise.resolve(onSticker?.({ jid, socket, stickerBytes }));
+				await Promise.resolve(onSticker?.({ ...base, stickerBytes }));
 			} else if (message.imageMessage) {
 				const imageBytes = await downloadMediaToBuffer(message.imageMessage, "image");
 
-				await Promise.resolve(onImage?.({ jid, socket, imageBytes }));
+				await Promise.resolve(onImage?.({ ...base, imageBytes }));
 			} else if (message.videoMessage?.gifPlayback === true) {
 				const gifBytes = await downloadMediaToBuffer(message.videoMessage, "gif");
 
-				await Promise.resolve(onGif?.({ jid, socket, gifBytes, gifInputExt: "mp4" }));
+				await Promise.resolve(onGif?.({ ...base, gifBytes, gifInputExt: "mp4" }));
+			} else if (message.videoMessage) {
+				const videoBytes = await downloadMediaToBuffer(message.videoMessage, "video");
+
+				await Promise.resolve(onVideo?.({ ...base, videoBytes }));
 			} else if (message.documentMessage && isGifDocumentFile(message.documentMessage)) {
 				const gifBytes = await downloadMediaToBuffer(message.documentMessage, "document");
 
-				await Promise.resolve(onGif?.({ jid, socket, gifBytes, gifInputExt: "gif" }));
+				await Promise.resolve(onGif?.({ ...base, gifBytes, gifInputExt: "gif" }));
 			} else if (text) {
 				await Promise.resolve(onText?.({ jid, socket, text }));
 			}
@@ -283,6 +296,9 @@ export async function createWhatsAppClient({
 		},
 		onGifMessage: (cb) => {
 			onGif = cb;
+		},
+		onVideoMessage: (cb) => {
+			onVideo = cb;
 		},
 		shutdown: () => {
 			shuttingDown = true;
