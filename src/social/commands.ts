@@ -1,7 +1,7 @@
 import type { CommandParams } from "../_lib/command-router.js";
 import type { Context } from "../messages/types.js";
-import { saveGifAsSticker } from "../sticker/commands.js";
-import { downloadSocialVideo } from "./download.js";
+import { saveGifAsSticker, saveImageAsSticker } from "../sticker/commands.js";
+import { downloadSocialMedia } from "./download.js";
 import {
 	AccessFailedError,
 	AmbiguousMediaError,
@@ -36,7 +36,7 @@ function socialDownloadUserMessage(error: SocialDownloadError): string {
 	}
 
 	if (error instanceof MediaNotFoundError) {
-		return "Esse link não tem vídeo.";
+		return "Esse link não tem mídia que eu consiga baixar.";
 	}
 
 	if (error instanceof AccessFailedError) {
@@ -54,45 +54,51 @@ function socialDownloadUserMessage(error: SocialDownloadError): string {
 	}
 
 	if (error instanceof VideoTooLargeError) {
-		return "O vídeo é grande demais para eu enviar.";
+		return "A mídia é grande demais para eu enviar.";
 	}
 
 	if (error instanceof DownloadFailedError) {
-		return "Não consegui baixar o vídeo.";
+		return "Não consegui baixar a mídia.";
 	}
 
-	return "Não consegui baixar o vídeo.";
+	return "Não consegui baixar a mídia.";
 }
 
-export async function downloadSocialVideoCommand({
+export async function downloadSocialMediaCommand({
 	args,
 	logger,
 	sendText,
 	sendVideo,
+	sendImage,
 }: CommandParams<Context>): Promise<void> {
 	const url = args[0];
 
 	if (!url) {
-		return await sendText("Informe o link do vídeo. Ex: *!baixar https://www.tiktok.com/...*");
+		return await sendText("Informe o link da mídia. Ex: *!baixar https://www.tiktok.com/...*");
 	}
 
-	await sendText("Baixando o vídeo... Isso pode levar alguns segundos.");
+	await sendText("Baixando a mídia... Isso pode levar alguns segundos.");
 
 	try {
-		const { bytes, platform, source } = await downloadSocialVideo(url, logger);
-		logger.info({ platform, source, byteLength: bytes.length }, "Sending social video");
-		await sendVideo(bytes);
+		const { bytes, platform, source, mediaType } = await downloadSocialMedia(url, logger);
+		logger.info({ platform, source, mediaType, byteLength: bytes.length }, "Sending social media");
+
+		if (mediaType === "image") {
+			await sendImage(bytes);
+		} else {
+			await sendVideo(bytes);
+		}
 	} catch (error) {
 		if (error instanceof SocialDownloadError) {
 			return await sendText(socialDownloadUserMessage(error));
 		}
 
-		logger.error(error, "Failed to download social video");
-		await sendText("Não consegui baixar o vídeo.");
+		logger.error(error, "Failed to download social media");
+		await sendText("Não consegui baixar a mídia.");
 	}
 }
 
-export async function socialVideoToSticker({
+export async function socialMediaToSticker({
 	args,
 	userId,
 	logger,
@@ -105,12 +111,26 @@ export async function socialVideoToSticker({
 	const url = args[0];
 
 	if (!url) {
-		return await sendText("Informe o link do vídeo. Ex: *!figurinha https://www.tiktok.com/...*");
+		return await sendText("Informe o link da mídia. Ex: *!figurinha https://www.tiktok.com/...*");
 	}
 
 	try {
-		const { bytes, platform, source } = await downloadSocialVideo(url, logger);
-		logger.info({ platform, source, byteLength: bytes.length }, "Converting social video to sticker");
+		const { bytes, platform, source, mediaType } = await downloadSocialMedia(url, logger);
+		logger.info({ platform, source, mediaType, byteLength: bytes.length }, "Converting social media to sticker");
+
+		if (mediaType === "image") {
+			await saveImageAsSticker({
+				userId,
+				logger,
+				image: bytes,
+				sendText,
+				sendSticker,
+				sendImage,
+				sendGif,
+				sendVideo,
+			});
+			return;
+		}
 
 		await saveGifAsSticker({
 			userId,
@@ -128,7 +148,7 @@ export async function socialVideoToSticker({
 			return await sendText(socialDownloadUserMessage(error));
 		}
 
-		logger.error(error, "Failed to convert social video to sticker");
-		await sendText("Não consegui converter este vídeo para figurinha.");
+		logger.error(error, "Failed to convert social media to sticker");
+		await sendText("Não consegui converter esta mídia para figurinha.");
 	}
 }

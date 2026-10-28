@@ -13,18 +13,36 @@ const execFileAsync = promisify(execFile);
 
 const YTDLP_TIMEOUT_MS = 90_000;
 
+const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp", "gif"]);
+
+export type YtDlpDownloadResult = {
+	bytes: Buffer;
+	mediaType: "video" | "image";
+};
+
 type DownloadWithYtDlpParams = {
 	url: string;
 	platform: SocialPlatform;
 	maxBytes: number;
+	/** 1-based playlist / carousel item (Instagram `img_index`) */
+	playlistItem?: number;
 };
 
-export async function downloadWithYtDlp({ url, platform, maxBytes }: DownloadWithYtDlpParams): Promise<Buffer> {
+function mediaTypeFromFilename(name: string): "video" | "image" {
+	const ext = name.split(".").pop()?.toLowerCase() ?? "";
+	return IMAGE_EXTENSIONS.has(ext) ? "image" : "video";
+}
+
+export async function downloadWithYtDlp({
+	url,
+	platform,
+	maxBytes,
+	playlistItem,
+}: DownloadWithYtDlpParams): Promise<YtDlpDownloadResult> {
 	const workDir = await mkdtemp(join(tmpdir(), "nicanor-ytdlp-"));
-	const outputTemplate = join(workDir, "video.%(ext)s");
+	const outputTemplate = join(workDir, "media.%(ext)s");
 
 	const args = [
-		"--no-playlist",
 		"--no-warnings",
 		"--ffmpeg-location",
 		ffmpegPath,
@@ -38,13 +56,17 @@ export async function downloadWithYtDlp({ url, platform, maxBytes }: DownloadWit
 		outputTemplate,
 	];
 
+	if (playlistItem !== undefined) {
+		// Instagram carousels are playlists; -I selects the slide (do not pass --no-playlist).
+		args.push("-I", String(playlistItem));
+	} else {
+		args.push("--no-playlist");
+	}
+
 	if (platform === "tiktok") {
 		// TikTok's "download" format is watermarked; h264_* play formats usually have no format_note,
 		// so filtering on format_note rejects them. Prefer any non-download format under the size cap.
-		args.push(
-			"-f",
-			`best[format_id!^=download][filesize<${maxBytes}]/best[format_id!^=download]/best`,
-		);
+		args.push("-f", `best[format_id!^=download][filesize<${maxBytes}]/best[format_id!^=download]/best`);
 	}
 
 	const cookiesFile = process.env.NICANOR_YTDLP_COOKIES_FILE?.trim();
@@ -61,13 +83,13 @@ export async function downloadWithYtDlp({ url, platform, maxBytes }: DownloadWit
 		});
 
 		const files = await readdir(workDir);
-		const videoFile = files.find((name) => name.startsWith("video."));
+		const mediaFile = files.find((name) => name.startsWith("media."));
 
-		if (!videoFile) {
+		if (!mediaFile) {
 			throw new DownloadFailedError("yt-dlp produced no output");
 		}
 
-		const bytes = await readFile(join(workDir, videoFile));
+		const bytes = await readFile(join(workDir, mediaFile));
 
 		if (bytes.length === 0) {
 			throw new DownloadFailedError("yt-dlp produced empty file");
@@ -77,7 +99,7 @@ export async function downloadWithYtDlp({ url, platform, maxBytes }: DownloadWit
 			throw new VideoTooLargeError(maxBytes);
 		}
 
-		return bytes;
+		return { bytes, mediaType: mediaTypeFromFilename(mediaFile) };
 	} catch (error) {
 		if (error instanceof SocialDownloadError) {
 			throw error;

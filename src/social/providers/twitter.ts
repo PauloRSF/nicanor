@@ -26,6 +26,11 @@ type FxTwitterResponse = {
 	};
 };
 
+export type ResolvedTwitterMedia = {
+	mediaUrl: string;
+	mediaType: "video" | "image";
+};
+
 export function parseTwitterUrl(url: string): { tweetId: string; mediaIndex?: number } | null {
 	const match = url.match(TWITTER_STATUS_URL);
 	if (!match) return null;
@@ -38,6 +43,10 @@ export function parseTwitterUrl(url: string): { tweetId: string; mediaIndex?: nu
 	}
 
 	return { tweetId, mediaIndex };
+}
+
+function mediaTypeOf(media: TwitterMedia): "video" | "image" {
+	return media.type === "photo" ? "image" : "video";
 }
 
 function selectMedia(all: TwitterMedia[], mediaIndex?: number): TwitterMedia {
@@ -55,14 +64,19 @@ function selectMedia(all: TwitterMedia[], mediaIndex?: number): TwitterMedia {
 		return videos[0];
 	}
 
-	if (videos.length === 0) {
-		throw new MediaNotFoundError("No video/GIF in tweet");
+	if (videos.length > 1) {
+		throw new AmbiguousMediaError("Multiple videos without media index");
 	}
 
-	throw new AmbiguousMediaError("Multiple videos without media index");
+	const photos = all.filter((item) => item.type === "photo");
+	if (photos.length >= 1) {
+		return photos[0];
+	}
+
+	throw new MediaNotFoundError("No media in tweet");
 }
 
-export async function resolveTwitterVideo(url: string): Promise<{ mp4Url: string }> {
+export async function resolveTwitterMedia(url: string): Promise<ResolvedTwitterMedia> {
 	const parsed = parseTwitterUrl(url);
 	if (!parsed) {
 		throw new InvalidUrlError("twitter");
@@ -90,9 +104,5 @@ export async function resolveTwitterVideo(url: string): Promise<{ mp4Url: string
 
 	const media = selectMedia(all, parsed.mediaIndex);
 
-	if (media.type !== "video" && media.type !== "gif") {
-		throw new MediaNotFoundError(`Media type is ${media.type}`);
-	}
-
-	return { mp4Url: media.url };
+	return { mediaUrl: media.url, mediaType: mediaTypeOf(media) };
 }

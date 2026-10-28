@@ -1,4 +1,4 @@
-import { AccessFailedError, NoWatermarkFreeVideoError } from "../errors.js";
+import { AccessFailedError, MediaNotFoundError, NoWatermarkFreeVideoError } from "../errors.js";
 
 const USER_AGENT = "Nicanor/0.1.0";
 
@@ -9,10 +9,16 @@ type TikwmResponse = {
 		hdplay?: string;
 		play?: string;
 		wmplay?: string;
+		images?: string[];
 	};
 };
 
-export async function resolveTikTokVideo(url: string): Promise<{ mp4Url: string }> {
+export type ResolvedTikTokMedia = {
+	mediaUrl: string;
+	mediaType: "video" | "image";
+};
+
+export async function resolveTikTokMedia(url: string): Promise<ResolvedTikTokMedia> {
 	const apiUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(url)}&hd=1`;
 	const response = await fetch(apiUrl, {
 		headers: { "User-Agent": USER_AGENT },
@@ -30,9 +36,18 @@ export async function resolveTikTokVideo(url: string): Promise<{ mp4Url: string 
 
 	const mp4Url = data.data.hdplay || data.data.play;
 
-	if (!mp4Url) {
+	if (mp4Url) {
+		return { mediaUrl: mp4Url, mediaType: "video" };
+	}
+
+	const images = data.data.images?.filter(Boolean) ?? [];
+	if (images.length >= 1) {
+		return { mediaUrl: images[0], mediaType: "image" };
+	}
+
+	if (data.data.wmplay) {
 		throw new NoWatermarkFreeVideoError();
 	}
 
-	return { mp4Url };
+	throw new MediaNotFoundError("No media in TikTok response");
 }

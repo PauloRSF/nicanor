@@ -55,3 +55,23 @@ export function detectPlatform(url: string): SocialPlatform | null {
 
 	return null;
 }
+
+function stripTrailingPunctuation(token: string): string {
+	return token.replace(/[.,;:!?）】」』»"'”’]+$/u, "");
+}
+
+/** Find the first X/Twitter, TikTok, or Instagram URL in free-form text. */
+export function extractSocialUrl(text: string): string | null {
+	const tokens = text.trim().split(/\s+/).filter(Boolean);
+
+	for (const token of tokens) {
+		const cleaned = stripTrailingPunctuation(token);
+		if (!cleaned) continue;
+
+		if (detectPlatform(cleaned)) {
+			return cleaned.includes("://") ? cleaned : `https://${cleaned}`;
+		}
+	}
+
+	return null;
+}
