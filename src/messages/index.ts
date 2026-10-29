@@ -23,36 +23,55 @@ const TAGGING_COMMANDS = new Set(["!tag", "!t", "!search", "!s"]);
 
 function buildContext(socket: WASocket, jid: string, isGroup: boolean, sourceMessage: WAMessage): Context {
 	const enrichedLogger = logger.child({ jid });
-	const sendOptions = isGroup ? { quoted: sourceMessage } : undefined;
+	const quotedOptions = isGroup
+		? {
+				quoted: {
+					key: {
+						remoteJid: sourceMessage.key.remoteJid,
+						id: sourceMessage.key.id,
+						fromMe: sourceMessage.key.fromMe,
+						participant: sourceMessage.key.participant,
+					},
+					message: sourceMessage.message,
+				},
+			}
+		: undefined;
+
+	async function send(
+		content: Parameters<WASocket["sendMessage"]>[1],
+		logFields: Record<string, unknown>,
+		logMsg: string,
+	): Promise<void> {
+		enrichedLogger.info({ ...logFields, isGroup }, logMsg);
+
+		try {
+			await socket.sendMessage(jid, content, quotedOptions);
+		} catch (error) {
+			if (!quotedOptions) throw error;
+
+			enrichedLogger.warn({ err: error }, "Quoted group send failed, retrying without quote");
+			await socket.sendMessage(jid, content);
+		}
+	}
 
 	return {
 		userId: jid,
 		logger: enrichedLogger,
 		isGroup,
 		sendText: async (text: string) => {
-			enrichedLogger.info({ text, isGroup }, "Sending text");
-
-			await socket.sendMessage(jid, { text }, sendOptions);
+			await send({ text }, { text }, "Sending text");
 		},
 		sendSticker: async (bytes: Buffer) => {
-			enrichedLogger.info({ stickerByteLength: bytes.length, isGroup }, "Sending sticker");
-
-			await socket.sendMessage(jid, { sticker: bytes }, sendOptions);
+			await send({ sticker: bytes }, { stickerByteLength: bytes.length }, "Sending sticker");
 		},
 		sendImage: async (bytes: Buffer) => {
-			enrichedLogger.info({ imageByteLength: bytes.length, isGroup }, "Sending image");
-
-			await socket.sendMessage(jid, { image: bytes }, sendOptions);
+			await send({ image: bytes }, { imageByteLength: bytes.length }, "Sending image");
 		},
 		sendGif: async (bytes: Buffer) => {
-			enrichedLogger.info({ gifByteLength: bytes.length, isGroup }, "Sending gif playback");
-
-			await socket.sendMessage(jid, { video: bytes, gifPlayback: true }, sendOptions);
+			await send({ video: bytes, gifPlayback: true }, { gifByteLength: bytes.length }, "Sending gif playback");
 		},
 		sendVideo: async (bytes: Buffer) => {
-			enrichedLogger.info({ videoByteLength: bytes.length, isGroup }, "Sending video");
-
-			await socket.sendMessage(jid, { video: bytes, mimetype: "video/mp4" }, sendOptions);
+			await send({ video: bytes, mimetype: "video/mp4" }, { videoByteLength: bytes.length }, "Sending video");
 		},
 	};
 }

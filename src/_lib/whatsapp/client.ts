@@ -3,17 +3,21 @@ import {
 	downloadContentFromMessage,
 	extractMessageContent,
 	fetchLatestBaileysVersion,
+	type GroupMetadata,
 	makeCacheableSignalKeyStore,
 	makeWASocket,
 	type proto,
 	useMultiFileAuthState,
 	type WAMessage,
+	type WAMessageKey,
 	type WASocket,
 } from "baileys";
 import PQueue from "p-queue";
 import qrcode from "qrcode-terminal";
 
 import { logger } from "../logger.js";
+
+const RECENT_OUTBOUND_TTL_MS = 10 * 60 * 1000;
 
 export type MessageContext = {
 	jid: string;
@@ -190,6 +194,8 @@ export async function createWhatsAppClient({
 	let connectedAt = 0;
 
 	const incomingQueuesByJid = new Map<string, PQueue>();
+	const groupCache = new Map<string, GroupMetadata>();
+	const recentOutbound = new Map<string, proto.IMessage>();
 
 	function incomingQueueFor(jid: string): PQueue {
 		let queue = incomingQueuesByJid.get(jid);
@@ -203,6 +209,29 @@ export async function createWhatsAppClient({
 		}
 
 		return queue;
+	}
+
+	function rememberOutboundMessage(key: WAMessageKey | undefined | null, message: proto.IMessage | undefined | null) {
+		const id = key?.id;
+		if (!id || !message) return;
+
+		recentOutbound.set(id, message);
+		setTimeout(() => recentOutbound.delete(id), RECENT_OUTBOUND_TTL_MS);
+	}
+
+	function cacheGroupMetadata(metadata: GroupMetadata) {
+		if (!metadata.id) return;
+		groupCache.set(metadata.id, metadata);
+	}
+
+	async function ensureGroupMetadata(socket: WASocket, jid: string): Promise<void> {
+		if (groupCache.has(jid)) return;
+
+		try {
+			cacheGroupMetadata(await socket.groupMetadata(jid));
+		} catch (err) {
+			logger.warn({ jid, err }, "Failed to load group metadata");
+		}
 	}
 
 	function getRemoteIncomingJid(msg: WAMessage): string | null {
@@ -253,6 +282,11 @@ export async function createWhatsAppClient({
 				if (isGroup) return;
 			} else if (isGroup && !mentionedBot) {
 				return;
+			}
+
+			// Warm group metadata before handlers send — avoids a live IQ on every sendMessage.
+			if (isGroup) {
+				await ensureGroupMetadata(socket, jid);
 			}
 
 			const base: MessageContext = { jid, socket, isGroup, sourceMessage: msg };
@@ -327,11 +361,42 @@ export async function createWhatsAppClient({
 			version,
 			printQRInTerminal: false,
 			syncFullHistory: false,
+			cachedGroupMetadata: async (jid) => groupCache.get(jid),
+			getMessage: async (key) => {
+				const id = key.id;
+				if (!id) return undefined;
+				return recentOutbound.get(id);
+			},
 		});
 
 		currentSocket = socket;
 
 		socket.ev.on("creds.update", saveCreds);
+
+		socket.ev.on("groups.upsert", (groups) => {
+			for (const group of groups) {
+				cacheGroupMetadata(group);
+			}
+		});
+
+		socket.ev.on("groups.update", (updates) => {
+			for (const update of updates) {
+				if (!update.id) continue;
+				const current = groupCache.get(update.id);
+				if (current) {
+					groupCache.set(update.id, { ...current, ...update });
+				}
+			}
+		});
+
+		socket.ev.on("group-participants.update", (event) => {
+			void socket
+				.groupMetadata(event.id)
+				.then(cacheGroupMetadata)
+				.catch((err) => {
+					logger.warn({ jid: event.id, err }, "Failed to refresh group metadata after participant update");
+				});
+		});
 
 		socket.ev.on("connection.update", (update) => {
 			const { connection, lastDisconnect, qr } = update;
@@ -344,6 +409,18 @@ export async function createWhatsAppClient({
 				connectedAt = Math.floor(Date.now() / 1000);
 				retryCount = 0;
 				logger.info("Connected to WhatsApp!");
+
+				void socket
+					.groupFetchAllParticipating()
+					.then((groups) => {
+						for (const metadata of Object.values(groups)) {
+							cacheGroupMetadata(metadata);
+						}
+						logger.info({ groupCount: Object.keys(groups).length }, "Cached participating group metadata");
+					})
+					.catch((err) => {
+						logger.warn(err, "Failed to prefetch participating groups");
+					});
 
 				if (!booted) {
 					booted = true;
@@ -386,6 +463,10 @@ export async function createWhatsAppClient({
 
 		socket.ev.on("messages.upsert", ({ messages }) => {
 			for (const msg of messages) {
+				if (msg.key.fromMe) {
+					rememberOutboundMessage(msg.key, msg.message);
+				}
+
 				const jid = getRemoteIncomingJid(msg);
 
 				if (!jid) continue;
