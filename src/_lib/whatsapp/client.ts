@@ -103,6 +103,23 @@ function isGifDocumentFile(doc: proto.Message.IDocumentMessage): boolean {
 	return name.endsWith(".gif");
 }
 
+function isViewOnceMessage(message: proto.IMessage | null | undefined): boolean {
+	if (!message) return false;
+
+	if (message.viewOnceMessage || message.viewOnceMessageV2 || message.viewOnceMessageV2Extension) {
+		return true;
+	}
+
+	const content = extractMessageContent(message) ?? message;
+
+	return Boolean(content.imageMessage?.viewOnce || content.videoMessage?.viewOnce || content.audioMessage?.viewOnce);
+}
+
+function isViewOnceWaMessage(msg: WAMessage): boolean {
+	if (msg.key?.isViewOnce) return true;
+	return isViewOnceMessage(msg.message);
+}
+
 async function downloadMediaToBuffer(
 	message:
 		| proto.Message.IStickerMessage
@@ -247,6 +264,8 @@ export async function createWhatsAppClient({
 	}
 
 	function hasDispatchablePayload(raw: proto.IMessage): boolean {
+		if (isViewOnceMessage(raw)) return false;
+
 		const message = extractMessageContent(raw) ?? raw;
 		const text = message.conversation ?? message.extendedTextMessage?.text;
 		const caption = message.imageMessage?.caption ?? message.videoMessage?.caption ?? message.documentMessage?.caption;
@@ -271,6 +290,9 @@ export async function createWhatsAppClient({
 			if (!jid) return;
 
 			if (!msg.message) return;
+
+			// Never turn view-once / one-time media into stickers.
+			if (isViewOnceWaMessage(msg)) return;
 
 			const message = extractMessageContent(msg.message) ?? msg.message;
 			const contextInfo = getMessageContextInfo(message);
@@ -324,7 +346,11 @@ export async function createWhatsAppClient({
 
 			// Reply-to-media: treat quoted media like a normal media message. In DMs, !commands
 			// still win; in groups commands are disabled so quoted media always wins.
-			if (contextInfo?.quotedMessage && (isGroup || !startsWithCommand(text))) {
+			if (
+				contextInfo?.quotedMessage &&
+				!isViewOnceMessage(contextInfo.quotedMessage) &&
+				(isGroup || !startsWithCommand(text))
+			) {
 				try {
 					const quotedMedia = await downloadMessageMedia(contextInfo.quotedMessage);
 
